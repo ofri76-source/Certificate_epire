@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: SSL Expiry Manager (All‑in‑One + Front Controls + Token Page)
+ * Plugin Name: SSL Expiry Manager (All-in-One + Front Controls + Token Page)
  * Description: ניהול ובדיקת תוקף SSL בטבלה עם עריכה, ייבוא/ייצוא CSV, סל מחזור 90 יום, REST לסוכן מקומי, בקרות פרונט ועמוד ניהול טוקן.
- * Version: 1.6.0
+ * Version: 1.5.0
  * Author: Ofri + GPT
  */
 if (!defined('ABSPATH')) exit;
@@ -25,7 +25,7 @@ class SSL_Expiry_Manager_AIO {
         add_shortcode('ssl_trash',      [$this,'shortcode_trash']);
         add_shortcode('ssl_controls',   [$this,'shortcode_controls']);
         add_shortcode('ssl_token',      [$this,'shortcode_token']);
-        add_shortcode('ssl_token_page', [$this,'shortcode_token_page']);
+        add_shortcode('ssl_token_page', [$this,'shortcode_token_page']); // חדש
         add_action('wp_enqueue_scripts', [$this,'assets']);
 
         add_action('admin_post_nopriv_'.self::SAVE_ACTION,    [$this,'handle_save']);
@@ -53,7 +53,6 @@ class SSL_Expiry_Manager_AIO {
         add_action('init', [$this,'route_export_helper']);
     }
 
-    /* ===== CPT + Meta ===== */
     public function register_cpt() {
         register_post_type(self::CPT, [
             'label' => 'SSL Certificates',
@@ -77,19 +76,17 @@ class SSL_Expiry_Manager_AIO {
         }
     }
 
-    /* ===== Assets ===== */
     public function assets() {
         $css = ".ssl-table{width:100%;border-collapse:collapse}.ssl-table th,.ssl-table td{border:1px solid #ddd;padding:8px;text-align:right}.ssl-badge{padding:2px 8px;border-radius:12px;color:#000;display:inline-block;min-width:70px;text-align:center;font-weight:600}.ssl-green{background:#c6f6d5}.ssl-yellow{background:#fefcbf}.ssl-red{background:#fed7d7}.ssl-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.ssl-form{border:1px solid #ddd;padding:12px;margin:12px 0;background:#fafafa}.ssl-form input[type=text],.ssl-form input[type=url],.ssl-form textarea{width:100%;padding:8px}.ssl-form label{display:block;margin-top:8px}.ssl-toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:10px 0}.ssl-note{font-size:12px;color:#666}.ssl-btn{display:inline-block;padding:6px 12px;border:1px solid #999;background:#fff;cursor:pointer;text-decoration:none}.ssl-btn:hover{background:#f0f0f0}.ssl-err{color:#b00020;font-size:12px}";
         wp_register_style('ssl-expiry-manager', false);
         wp_enqueue_style('ssl-expiry-manager');
         wp_add_inline_style('ssl-expiry-manager', $css);
-        $js = "document.addEventListener('click',function(e){var t=e.target;if(t.matches('[data-ssl-edit]')){var id=t.getAttribute('data-ssl-edit');var row=document.querySelector('[data-ssl-form=\\"'+id+'\\"]');if(row){row.hidden=!row.hidden;}}});";
+        $js = "document.addEventListener('click',function(e){var t=e.target;if(t.matches('[data-ssl-edit]')){var id=t.getAttribute('data-ssl-edit');var row=document.querySelector('[data-ssl-form=\"'+id+'\"]');if(row){row.hidden=!row.hidden;}}});";
         wp_register_script('ssl-expiry-manager-js','',[],false,true);
         wp_enqueue_script('ssl-expiry-manager-js');
         wp_add_inline_script('ssl-expiry-manager-js',$js);
     }
 
-    /* ===== Helpers ===== */
     private function nonce_field(){ return wp_nonce_field(self::NONCE, self::NONCE, true, false); }
     private function check_nonce(){ if(!isset($_POST[self::NONCE])||!wp_verify_nonce($_POST[self::NONCE], self::NONCE)) wp_die('Invalid nonce'); }
     private function sanitize_url($url){ $url=trim($url); if($url && !preg_match('#^https?://#i',$url)) $url='https://'.$url; return esc_url_raw($url); }
@@ -98,33 +95,32 @@ class SSL_Expiry_Manager_AIO {
     private function fmt_date($ts){ return $ts ? date_i18n('Y-m-d', $ts) : ''; }
     private function url_btn($u){ if(!$u) return ''; $u=esc_url($u); return "<a class='ssl-btn' target='_blank' rel='noopener' href='{$u}'>פתיחת אתר</a>"; }
 
-    /* ===== Shortcode: Main table ===== */
     public function shortcode_table($atts = []) {
         $a = shortcode_atts(['trash_url' => site_url('/?page=ssl-trash')], $atts);
         $create_hidden = empty($_GET['ssl_new']) ? 'hidden' : '';
         ob_start();
-
         echo "<div class='ssl-toolbar'>";
         echo "<div><a class='ssl-btn' href='".esc_url(add_query_arg('ssl_new','1'))."'>הוסף רשומה</a> ";
         echo "<a class='ssl-btn' href='".esc_url(site_url('?ssl_action='.self::EXPORT_ACTION))."'>ייצוא CSV</a></div>";
-        echo "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data' style='display:flex;gap:8px;align-items:center'>".$this->nonce_field().
-             "<input type='hidden' name='action' value='".esc_attr(self::IMPORT_ACTION)."' />".
-             "<input type='file' name='csv' accept='.csv' required />".
-             "<button class='ssl-btn' type='submit'>ייבוא CSV</button></form>";
-        echo "<div><a class='ssl-btn' href='".esc_url(add_query_arg([],get_permalink()))."'>רענון</a> <a class='ssl-btn' href='".esc_url($a['trash_url'])."'>סל מחזור</a> <a class='ssl-btn' href='https://kbtest.macomp.co.il/?p=9447'>ניהול טוקן</a></div>";
+        echo "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data' style='display:flex;gap:8px;align-items:center'>".$this->nonce_field()."
+              <input type='hidden' name='action' value='".esc_attr(self::IMPORT_ACTION)."' />
+              <input type='file' name='csv' accept='.csv' required />
+              <button class='ssl-btn' type='submit'>ייבוא CSV</button></form>";
+        echo "<div><a class='ssl-btn' href='".esc_url(add_query_arg([],get_permalink()))."'>רענון</a> <a class='ssl-btn' href='".esc_url($a['trash_url'])."'>סל מחזור</a></div>";
         echo "</div>";
 
-        echo "<div class='ssl-form' {$create_hidden}><form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field().
-             "<input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />".
-             "<input type='hidden' name='post_id' value='0' />".
-             "<label>שם הלקוח<input type='text' name='client_name' required></label>".
-             "<label>אתר (URL)<input type='url' name='site_url' placeholder='https://example.com'></label>".
-             "<label>תאריך תפוגה (YYYY-MM-DD) <input type='text' name='expiry_date' placeholder='2026-12-31'></label>".
-             "<label>ליקוט <select name='source'><option value='manual'>ידני</option><option value='auto'>אוטומטי</option></select></label>".
-             "<label><input type='checkbox' name='agent_only' value='1'> בדיקה דרך Agent בלבד</label>".
-             "<label>הערות<textarea name='notes' rows='3'></textarea></label>".
-             "<label>תמונות<input type='file' name='images[]' multiple accept='image/*'></label>".
-             "<button class='ssl-btn' type='submit'>שמור</button></form><div class='ssl-note'>בדיקה אוטומטית יומית לאתרים ציבוריים. פנימיים יסומנו Agent בלבד.</div></div>";
+        echo "<div class='ssl-form' {$create_hidden}><form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field()."
+              <input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />
+              <input type='hidden' name='post_id' value='0' />
+              <label>שם הלקוח<input type='text' name='client_name' required></label>
+              <label>אתר (URL)<input type='url' name='site_url' placeholder='https://example.com'></label>
+              <label>תאריך תפוגה (YYYY-MM-DD) <input type='text' name='expiry_date' placeholder='2026-12-31'></label>
+              <label>ליקוט <select name='source'><option value='manual'>ידני</option><option value='auto'>אוטומטי</option></select></label>
+              <label><input type='checkbox' name='agent_only' value='1'> בדיקה דרך Agent בלבד</label>
+              <label>הערות<textarea name='notes' rows='3'></textarea></label>
+              <label>תמונות<input type='file' name='images[]' multiple accept='image/*'></label>
+              <button class='ssl-btn' type='submit'>שמור</button></form>
+              <div class='ssl-note'>בדיקה אוטומטית יומית לאתרים ציבוריים. פנימיים יסומנו Agent בלבד.</div></div>";
 
         $q = new WP_Query(['post_type'=> self::CPT,'post_status'=> ['publish','draft','pending'],'posts_per_page'=> -1,'orderby'=>'title','order'=>'ASC']);
 
@@ -159,23 +155,25 @@ class SSL_Expiry_Manager_AIO {
                 echo "<td class='ssl-actions'>";
                 echo "<a class='ssl-btn' href='javascript:void(0)' data-ssl-edit='".esc_attr($id)."'>עריכה</a>";
                 $del_url=esc_url(admin_url('admin-post.php'));
-                echo "<form method='post' action='{$del_url}' style='display:inline'>".$this->nonce_field().
-                        "<input type='hidden' name='action' value='".esc_attr(self::DELETE_ACTION)."' />".
-                        "<input type='hidden' name='post_id' value='".esc_attr($id)."' />".
-                        "<button class='ssl-btn' type='submit' onclick='return confirm(\"להעביר לסל מחזור?\")'>מחיקה</button></form>";
+                echo "<form method='post' action='{$del_url}' style='display:inline'>".$this->nonce_field()."
+                        <input type='hidden' name='action' value='".esc_attr(self::DELETE_ACTION)."' />
+                        <input type='hidden' name='post_id' value='".esc_attr($id)."' />
+                        <button class='ssl-btn' type='submit' onclick='return confirm(\"להעביר לסל מחזור?\")'>מחיקה</button>
+                      </form>";
                 echo "</td></tr>";
 
-                echo "<tr data-ssl-form='".esc_attr($id)."' hidden><td colspan='10'><div class='ssl-form'><form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field().
-                        "<input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />".
-                        "<input type='hidden' name='post_id' value='".esc_attr($id)."' />".
-                        "<label>שם הלקוח<input type='text' name='client_name' value='".esc_attr($client)."'></label>".
-                        "<label>אתר (URL)<input type='url' name='site_url' value='".esc_attr($url)."'></label>".
-                        "<label>תאריך תפוגה (YYYY-MM-DD) <input type='text' name='expiry_date' value='".esc_attr($this->fmt_date($expiry))."'></label>".
-                        "<label>ליקוט <select name='source'><option value='manual' ".selected($src,'manual',false).">ידני</option><option value='auto' ".selected($src,'auto',false).">אוטומטי</option></select></label>".
-                        "<label><input type='checkbox' name='agent_only' value='1' ".checked((bool)get_post_meta($id,'agent_only',true),true,false)."> בדיקה דרך Agent בלבד</label>".
-                        "<label>הערות<textarea name='notes' rows='3'>".esc_textarea($notes)."</textarea></label>".
-                        "<label>תמונות (להוסיף חדשות) <input type='file' name='images[]' multiple accept='image/*'></label>".
-                        "<button class='ssl-btn' type='submit'>שמור</button></form></div></td></tr>";
+                echo "<tr data-ssl-form='".esc_attr($id)."' hidden><td colspan='10'><div class='ssl-form'><form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field()."
+                        <input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />
+                        <input type='hidden' name='post_id' value='".esc_attr($id)."' />
+                        <label>שם הלקוח<input type='text' name='client_name' value='".esc_attr($client)."'></label>
+                        <label>אתר (URL)<input type='url' name='site_url' value='".esc_attr($url)."'></label>
+                        <label>תאריך תפוגה (YYYY-MM-DD) <input type='text' name='expiry_date' value='".esc_attr($this->fmt_date($expiry))."'></label>
+                        <label>ליקוט <select name='source'><option value='manual' ".selected($src,'manual',false).">ידני</option><option value='auto' ".selected($src,'auto',false).">אוטומטי</option></select></label>
+                        <label><input type='checkbox' name='agent_only' value='1' ".checked((bool)get_post_meta($id,'agent_only',true),true,false)."> בדיקה דרך Agent בלבד</label>
+                        <label>הערות<textarea name='notes' rows='3'>".esc_textarea($notes)."</textarea></label>
+                        <label>תמונות (להוסיף חדשות) <input type='file' name='images[]' multiple accept='image/*'></label>
+                        <button class='ssl-btn' type='submit'>שמור</button>
+                      </form></div></td></tr>";
             }
             wp_reset_postdata();
         } else {
@@ -186,13 +184,12 @@ class SSL_Expiry_Manager_AIO {
         return ob_get_clean();
     }
 
-    /* ===== Shortcode: Trash ===== */
     public function shortcode_trash($atts = []) {
         $a = shortcode_atts(['main_url' => site_url('/')], $atts);
         $q = new WP_Query(['post_type'=> self::CPT,'post_status'=> 'trash','posts_per_page'=> -1,'orderby'=>'modified','order'=>'DESC']);
         ob_start();
         echo "<h3>סל מחזור</h3>";
-        echo "<div><a class='ssl-btn' href='".esc_url($a['main_url'])."'>חזרה לטבלה</a> <a class='ssl-btn' href='https://kbtest.macomp.co.il/?p=9447'>ניהול טוקן</a></div>";
+        echo "<div><a class='ssl-btn' href='".esc_url($a['main_url'])."'>חזרה לטבלה</a></div>";
         echo "<table class='ssl-table'><thead><tr><th>שם הלקוח</th><th>אתר</th><th>נמחק</th><th>שחזור</th></tr></thead><tbody>";
         if ($q->have_posts()){
             while($q->have_posts()){ $q->the_post();
@@ -200,10 +197,11 @@ class SSL_Expiry_Manager_AIO {
                 echo "<tr><td>".esc_html(get_post_meta($id,'client_name',true))."</td>
                           <td>".esc_html($url)."</td>
                           <td>".esc_html(get_the_modified_date('Y-m-d'))."</td>
-                          <td><form method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().
-                                "<input type='hidden' name='action' value='".esc_attr(self::RESTORE_ACTION)."' />".
-                                "<input type='hidden' name='post_id' value='".esc_attr($id)."' />".
-                                "<button class='ssl-btn' type='submit'>שחזר</button></form></td></tr>";
+                          <td><form method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()."
+                                <input type='hidden' name='action' value='".esc_attr(self::RESTORE_ACTION)."' />
+                                <input type='hidden' name='post_id' value='".esc_attr($id)."' />
+                                <button class='ssl-btn' type='submit'>שחזר</button>
+                              </form></td></tr>";
             }
             wp_reset_postdata();
         } else {
@@ -214,7 +212,6 @@ class SSL_Expiry_Manager_AIO {
         return ob_get_clean();
     }
 
-    /* ===== Front controls bar (separate shortcode if רוצים להשתמש) ===== */
     public function shortcode_controls($atts = []) {
         $a = shortcode_atts(['main_url'=>site_url('/'),'trash_url'=>site_url('/?page=ssl-trash')], $atts);
         $export_url = site_url('?ssl_action='.self::EXPORT_ACTION);
@@ -223,18 +220,17 @@ class SSL_Expiry_Manager_AIO {
         echo "<div class='ssl-toolbar'>";
         echo "<a class='ssl-btn' href='".esc_url(add_query_arg('ssl_new','1',$a['main_url']))."'>הוסף רשומה</a> ";
         echo "<a class='ssl-btn' href='".esc_url($export_url)."'>ייצוא CSV</a> ";
-        echo "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data' style='display:inline-flex;gap:8px;margin:0 8px'>".$this->nonce_field().
-                "<input type='hidden' name='action' value='{$import_action}' />".
-                "<input type='file' name='csv' accept='.csv' required />".
-                "<button class='ssl-btn' type='submit'>ייבוא CSV</button></form>";
+        echo "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data' style='display:inline-flex;gap:8px;margin:0 8px'>".$this->nonce_field()."
+                <input type='hidden' name='action' value='{$import_action}' />
+                <input type='file' name='csv' accept='.csv' required />
+                <button class='ssl-btn' type='submit'>ייבוא CSV</button>
+              </form>";
         echo "<a class='ssl-btn' href='".esc_url($a['main_url'])."'>לטבלה</a> ";
-        echo "<a class='ssl-btn' href='".esc_url($a['trash_url'])."'>סל מחזור</a> ";
-        echo "<a class='ssl-btn' href='https://kbtest.macomp.co.il/?p=9447'>ניהול טוקן</a>";
+        echo "<a class='ssl-btn' href='".esc_url($a['trash_url'])."'>סל מחזור</a>";
         echo "</div>";
         return ob_get_clean();
     }
 
-    /* ===== Token shortcodes + handler ===== */
     public function shortcode_token() {
         $tok = get_option(self::OPTION_TOKEN);
         if (!$tok) { $tok = wp_generate_password(32,false,false); update_option(self::OPTION_TOKEN, $tok); }
@@ -243,15 +239,16 @@ class SSL_Expiry_Manager_AIO {
         echo "<div class='ssl-form'><h3>Token ל-Agent</h3>
                 <div style='display:flex;gap:8px;align-items:center;flex-wrap:wrap'>
                   <input type='text' readonly value='".esc_attr($tok)."' style='width:420px'>
-                  <form method='post' action='".esc_url(admin_url('admin-post.php'))."' style='display:inline'>".
-                    $this->nonce_field().
-                    "<input type='hidden' name='action' value='{$action}'>
+                  <form method='post' action='".esc_url(admin_url('admin-post.php'))."' style='display:inline'>
+                    ".$this->nonce_field()."
+                    <input type='hidden' name='action' value='{$action}'>
                     <button class='ssl-btn' type='submit' onclick='return confirm(\"ליצור טוקן חדש?\")'>צור טוקן חדש</button>
                   </form>
                 </div>
                 <div class='ssl-note'>Header: <code>X-SSL-Token</code> = הערך לעיל</div></div>";
         return ob_get_clean();
     }
+
     public function shortcode_token_page() {
         $tok = get_option(self::OPTION_TOKEN);
         if (!$tok) { $tok = wp_generate_password(32,false,false); update_option(self::OPTION_TOKEN, $tok); }
@@ -264,9 +261,9 @@ class SSL_Expiry_Manager_AIO {
                 <p>הטוקן נדרש לחיבור הסוכן המקומי למערכת.</p>
                 <div style='display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px'>
                   <input type='text' readonly value='".esc_attr($tok)."' style='width:420px;font-family:monospace'>
-                  <form method='post' action='".esc_url(admin_url('admin-post.php'))."' style='display:inline'>".
-                    $this->nonce_field().
-                    "<input type='hidden' name='action' value='{$action}'>
+                  <form method='post' action='".esc_url(admin_url('admin-post.php'))."' style='display:inline'>
+                    ".$this->nonce_field()."
+                    <input type='hidden' name='action' value='{$action}'>
                     <button class='ssl-btn' type='submit' onclick='return confirm(\"ליצור טוקן חדש?\")'>צור טוקן חדש</button>
                   </form>
                 </div>
@@ -279,6 +276,7 @@ class SSL_Expiry_Manager_AIO {
               </div>";
         return ob_get_clean();
     }
+
     public function handle_regen_token() {
         $this->check_nonce();
         $tok = wp_generate_password(32,false,false);
@@ -286,7 +284,6 @@ class SSL_Expiry_Manager_AIO {
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
 
-    /* ===== Forms ===== */
     public function handle_save() {
         $this->check_nonce();
         $post_id=intval($_POST['post_id'] ?? 0);
@@ -335,7 +332,6 @@ class SSL_Expiry_Manager_AIO {
     public function handle_delete(){ $this->check_nonce(); $id=intval($_POST['post_id']??0); if($id) wp_trash_post($id); wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit; }
     public function handle_restore(){ $this->check_nonce(); $id=intval($_POST['post_id']??0); if($id) wp_untrash_post($id); wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit; }
 
-    /* ===== CSV ===== */
     public function handle_export() {
         $filename='ssl-export-'.date('Ymd-His').'.csv';
         header('Content-Type: text/csv; charset=utf-8');
@@ -380,7 +376,6 @@ class SSL_Expiry_Manager_AIO {
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
 
-    /* ===== Cron daily (ציבוריים בלבד) ===== */
     public function ensure_cron(){ if(!wp_next_scheduled(self::CRON_HOOK)) wp_schedule_event(time()+300,'daily',self::CRON_HOOK); }
     public function cron_check_all() {
         $q=new WP_Query(['post_type'=>self::CPT,'post_status'=>['publish','draft','pending'],'posts_per_page'=>-1,'meta_query'=>[['key'=>'agent_only','compare'=>'!=','value'=>1]]]);
@@ -407,7 +402,6 @@ class SSL_Expiry_Manager_AIO {
         return (int)$parsed['validTo_time_t'];
     }
 
-    /* ===== REST for Agent ===== */
     public function register_rest() {
         register_rest_route('ssl/v1','/tasks',['methods'=>'GET','permission_callback'=>'__return_true','callback'=>[$this,'rest_tasks']]);
         register_rest_route('ssl/v1','/report',['methods'=>'POST','permission_callback'=>'__return_true','callback'=>[$this,'rest_report']]);
@@ -452,7 +446,6 @@ class SSL_Expiry_Manager_AIO {
         return new WP_REST_Response(['ok'=>true,'updated'=>count($rows)],200);
     }
 
-    /* ===== Settings (admin) ===== */
     public function settings_page(){
         add_options_page('SSL Expiry API','SSL Expiry API','manage_options','ssl-expiry-api',function(){
             if(isset($_POST[self::OPTION_TOKEN]) && check_admin_referer('ssl_em_save_token')){
