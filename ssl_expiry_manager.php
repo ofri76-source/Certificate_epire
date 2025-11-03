@@ -156,9 +156,24 @@ class SSL_Expiry_Manager_AIO {
 .ssl-token-table input[type=text][readonly]{cursor:text;}
 .ssl-token-table__name{min-width:220px;}
 .ssl-token-table__token{font-family:monospace;font-size:.9rem;}
-.ssl-token-table__meta{color:#64748b;font-size:.85rem;min-width:140px;}
-.ssl-token-table__actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
-.ssl-token-hidden-form{display:none;}
+.ssl-token-table__status{min-width:220px;}
+ .ssl-token-table__actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
+ .ssl-token-hidden-form{display:none;}
+.ssl-token-status{display:flex;gap:10px;align-items:flex-start;}
+.ssl-token-status__dot{width:12px;height:12px;border-radius:50%;box-shadow:0 0 0 4px rgba(148,163,184,.18);margin-top:6px;}
+.ssl-token-status__dot--online{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.18);}
+.ssl-token-status__dot--offline{background:#ef4444;box-shadow:0 0 0 4px rgba(239,68,68,.18);}
+.ssl-token-status__dot--unknown{background:#94a3b8;box-shadow:0 0 0 4px rgba(148,163,184,.2);}
+.ssl-token-status__text{display:flex;flex-direction:column;gap:4px;}
+.ssl-token-status__label{font-weight:700;color:#0f172a;}
+.ssl-token-status__meta{font-size:.8rem;color:#64748b;}
+.ssl-token-status__meta--error{color:#b91c1c;}
+.ssl-token-table__notify,.ssl-token-table__emails{vertical-align:top;}
+.ssl-token-toggle{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#0f172a;font-weight:600;}
+.ssl-token-toggle input[type=checkbox]{margin:0;}
+.ssl-token-emails__select{width:100%;min-width:200px;border:1px solid #cbd5f5;border-radius:10px;padding:.45rem .6rem;background:#f8fafc;color:#0f172a;font-size:.85rem;}
+.ssl-token-emails__input{margin-top:8px;width:100%;border:1px solid #cbd5f5;border-radius:10px;padding:.45rem .6rem;background:#fff;color:#0f172a;font-size:.85rem;}
+ .ssl-token-note{margin-top:12px;}
 .ssl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .ssl-table__edit-row td{background:#f8fafc;}
 .ssl-empty{text-align:center;padding:24px;font-size:1rem;color:#64748b;}
@@ -171,6 +186,8 @@ class SSL_Expiry_Manager_AIO {
  .ssl-actions{justify-content:center;}
  .ssl-token-create__fields{flex-direction:column;align-items:stretch;}
  .ssl-token-table__actions{justify-content:center;}
+ .ssl-token-status{flex-direction:column;align-items:flex-start;}
+ .ssl-token-emails__select{min-width:100%;}
 }
 .ssl-err{color:#b00020;font-size:.85rem;}
 CSS;
@@ -270,6 +287,25 @@ JS;
             $token['token'] = isset($token['token']) && $token['token'] ? (string)$token['token'] : $this->generate_token_value();
             $token['created'] = isset($token['created']) ? (int)$token['created'] : time();
             $token['updated'] = isset($token['updated']) ? (int)$token['updated'] : time();
+            $status = isset($token['last_status']) ? strtolower((string)$token['last_status']) : 'unknown';
+            if(!in_array($status, ['online','offline','unknown'], true)){
+                $status = 'unknown';
+            }
+            $token['last_status'] = $status;
+            $token['last_seen'] = isset($token['last_seen']) ? (int)$token['last_seen'] : 0;
+            $token['last_error'] = isset($token['last_error']) ? sanitize_text_field($token['last_error']) : '';
+            $token['notify_down'] = !empty($token['notify_down']) ? 1 : 0;
+            $emails = [];
+            if(isset($token['emails'])){
+                foreach((array)$token['emails'] as $email){
+                    $email = sanitize_email($email);
+                    if($email){
+                        $emails[$email] = $email;
+                    }
+                }
+            }
+            $token['emails'] = array_values($emails);
+            $token['notified_down_at'] = isset($token['notified_down_at']) ? (int)$token['notified_down_at'] : 0;
             $normalized[] = $token;
         }
         return $normalized;
@@ -296,6 +332,12 @@ JS;
             'token'   => $this->generate_token_value(),
             'created' => time(),
             'updated' => time(),
+            'last_status' => 'unknown',
+            'last_seen'   => 0,
+            'last_error'  => '',
+            'notify_down' => 0,
+            'emails'      => [],
+            'notified_down_at' => 0,
         ]];
         $this->save_tokens($default);
         return $default;
@@ -305,6 +347,10 @@ JS;
     }
     private function generate_token_id(){
         return 'tok_'.wp_generate_password(8, false, false);
+    }
+    private function get_primary_token(){
+        $tokens = $this->ensure_default_token();
+        return $tokens[0] ?? null;
     }
     private function get_page_url($slug, $fallback){
         $page = get_page_by_path($slug);
@@ -318,13 +364,115 @@ JS;
     }
 
     private function get_primary_token_value(){
-        $tokens = $this->ensure_default_token();
-        foreach($tokens as $token){
-            if(!empty($token['token'])){
-                return (string)$token['token'];
-            }
+        $token = $this->get_primary_token();
+        if($token && !empty($token['token'])){
+            return (string)$token['token'];
         }
         return '';
+    }
+
+    private function update_token_fields($token_id, array $changes){
+        $tokens = $this->ensure_default_token();
+        $updated = null;
+        foreach($tokens as &$token){
+            if($token['id'] !== $token_id){
+                continue;
+            }
+            foreach($changes as $key => $value){
+                $token[$key] = $value;
+            }
+            $updated = $token;
+            break;
+        }
+        unset($token);
+        if($updated !== null){
+            $this->save_tokens($tokens);
+        }
+        return $updated;
+    }
+
+    private function mark_token_online($token_id){
+        return $this->update_token_fields($token_id, [
+            'last_seen' => time(),
+            'last_status' => 'online',
+            'last_error' => '',
+            'notified_down_at' => 0,
+        ]);
+    }
+
+    private function mark_token_offline($token_id, $message){
+        return $this->update_token_fields($token_id, [
+            'last_status' => 'offline',
+            'last_error' => $message,
+        ]);
+    }
+
+    private function maybe_notify_token_down($token, $message){
+        if(empty($token['notify_down'])){
+            return;
+        }
+        $recipients = array_filter(array_map('sanitize_email', (array)($token['emails'] ?? [])));
+        if(empty($recipients)){
+            return;
+        }
+        $already = isset($token['notified_down_at']) ? (int)$token['notified_down_at'] : 0;
+        if($already && (time() - $already) < HOUR_IN_SECONDS){
+            return;
+        }
+        if(!function_exists('wp_mail')){
+            return;
+        }
+        $site = wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES);
+        $subject = sprintf('התראת חיבור סוכן SSL - %s', $token['name']);
+        $body = sprintf("שלום,\n\nהחיבור לסוכן ה-SSL עבור הטוקן \"%s\" נפל.\nהודעה אחרונה: %s\nאתר: %s\nזמן: %s\n\nהטוקן יסומן כמנותק עד שיתקבל חיבור מחודש.",
+            $token['name'],
+            $message ? $message : 'לא התקבלה שגיאה מפורטת',
+            home_url('/'),
+            date_i18n('d.m.Y H:i')
+        );
+        wp_mail($recipients, $subject.' - '.$site, $body);
+        $this->update_token_fields($token['id'], ['notified_down_at' => time()]);
+    }
+
+    private function collect_token_email_choices(){
+        $choices = [];
+        $admin_email = sanitize_email(get_option('admin_email'));
+        if($admin_email){
+            $choices[$admin_email] = $admin_email.' (מנהל)';
+        }
+        $users = get_users(['fields' => ['ID','display_name','user_email']]);
+        foreach($users as $user){
+            $email = sanitize_email($user->user_email);
+            if(!$email){
+                continue;
+            }
+            $label = $email;
+            if(!empty($user->display_name) && stripos($user->display_name, $email) === false){
+                $label = $user->display_name.' <'.$email.'>';
+            }
+            $choices[$email] = $label;
+        }
+        return $choices;
+    }
+
+    private function parse_token_emails($selected, $extra){
+        $emails = [];
+        foreach((array)$selected as $email){
+            $email = sanitize_email($email);
+            if($email){
+                $emails[$email] = $email;
+            }
+        }
+        if($extra){
+            $parts = preg_split('/[\s,;]+/', (string)$extra);
+            foreach($parts as $email){
+                $email = sanitize_email($email);
+                if($email){
+                    $emails[$email] = $email;
+                }
+            }
+        }
+        return array_values($emails);
     }
 
     private function get_remote_client_settings(){
@@ -373,17 +521,18 @@ JS;
         if(!$this->remote_client_is_ready($settings)){
             return false;
         }
-        $token = $this->get_primary_token_value();
-        if(!$token){
+        $primary = $this->get_primary_token();
+        if(!$primary || empty($primary['token'])){
             return false;
         }
+        $token_value = (string)$primary['token'];
         $endpoint = trailingslashit($settings['endpoint']).'api/check';
         $payload = [
             'request_id' => 'wp'.wp_generate_password(12, false, false),
             'id' => (int)$post_id,
             'site_url' => (string)$url,
             'callback' => rest_url('ssl/v1/report'),
-            'token' => $token,
+            'token' => $token_value,
             'context' => $context,
             'report_timeout' => (int)$settings['timeout'],
         ];
@@ -408,6 +557,7 @@ JS;
                 if($code >= 200 && $code < 300){
                     update_post_meta($post_id, 'expiry_ts_checked_at', time());
                     delete_post_meta($post_id, 'last_error');
+                    $this->mark_token_online($primary['id']);
                     return true;
                 }
                 $body = wp_remote_retrieve_body($response);
@@ -423,12 +573,19 @@ JS;
         if($last_message){
             update_post_meta($post_id, 'last_error', $last_message);
         }
+        $token_state = $this->mark_token_offline($primary['id'], $last_message ?: 'שגיאת תקשורת לא ידועה');
+        if($token_state){
+            $this->maybe_notify_token_down($token_state, $last_message ?: 'שגיאת תקשורת לא ידועה');
+        }
         return false;
     }
 
     public function shortcode_table($atts = []) {
         $default_trash = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
-        $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
+        $default_token = $this->get_page_url('ssl-token-page', '');
+        if(!$default_token){
+            $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
+        }
         $a = shortcode_atts([
             'trash_url' => $default_trash,
             'token_url' => $default_token,
@@ -582,7 +739,10 @@ JS;
     }
 
     public function shortcode_controls($atts = []) {
-        $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
+        $default_token = $this->get_page_url('ssl-token-page', '');
+        if(!$default_token){
+            $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
+        }
         $default_trash = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
         $a = shortcode_atts([
             'main_url'=>site_url('/'),
@@ -634,13 +794,26 @@ JS;
         return ob_get_clean();
     }
     public function shortcode_token_page($atts = []) {
+        $main_default = '';
+        foreach(['ssl-cert-table','ssl-manager','ssl-table'] as $slug){
+            $candidate = $this->get_page_url($slug, '');
+            if($candidate){
+                $main_default = $candidate;
+                break;
+            }
+        }
+        if(!$main_default){
+            $main_default = site_url('/');
+        }
+        $trash_default = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
         $a = shortcode_atts([
-            'main_url'  => site_url('/'),
-            'trash_url' => site_url('/?page=ssl-trash'),
+            'main_url'  => $main_default,
+            'trash_url' => $trash_default,
         ], $atts);
         $tokens = $this->ensure_default_token();
         $add_action    = esc_attr(self::ADD_TOKEN_ACTION);
         $manage_action = esc_attr(self::MANAGE_TOKEN_ACTION);
+        $email_choices = $this->collect_token_email_choices();
         ob_start();
         echo "<div class='ssl-manager'>";
         echo "<div class='ssl-manager__header ssl-manager__header--tokens'>";
@@ -659,7 +832,7 @@ JS;
                 ."<input type='hidden' name='action' value='{$add_action}'>"
                 ."<div class='ssl-token-create__fields'>"
                 ."  <label><span>שם הטוקן</span><input type='text' name='token_name' placeholder='לדוגמה: סוכן ראשי' required></label>"
-                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>הוסף טוקן</button>"
+                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>וסף טוקן</button>"
                 ."</div>"
                 ."<p class='ssl-note'>הוסיפו טוקנים לפי הצורך והשתמשו בערך שלהם בבקשות מרוחקות.</p>"
               ."</form>";
@@ -676,24 +849,75 @@ JS;
         echo $forms;
 
         echo "<table class='ssl-table ssl-token-table'>";
-        echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>עודכן לאחרונה</th><th style='width:220px'>פעולות</th></tr></thead>";
+        echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>סטטוס חיבור</th><th>התראות</th><th>נמענים</th><th style='width:240px'>פעולות</th></tr></thead>";
         echo "<tbody>";
-        foreach($tokens as $token){
-            $form_id = 'ssl-token-manage-'.sanitize_key($token['id']);
-            $updated = !empty($token['updated']) ? date_i18n('d.m.Y H:i', (int)$token['updated']) : '—';
-            echo "<tr>";
-            echo "<td class='ssl-token-table__name'><input form='".esc_attr($form_id)."' type='text' name='token_name' value='".esc_attr($token['name'])."' required></td>";
-            echo "<td class='ssl-token-table__token'><input type='text' readonly value='".esc_attr($token['token'])."'></td>";
-            echo "<td class='ssl-token-table__meta'>".esc_html($updated)."</td>";
-            echo "<td><div class='ssl-token-table__actions'>";
-            echo "<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='update'>שמור שם</button>";
-            echo "<button class='ssl-btn ssl-btn-surface' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='regen' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>";
-            echo "<button class='ssl-btn ssl-btn-danger' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='delete' onclick=\"return confirm('למחוק את הטוקן?')\">מחק</button>";
-            echo "</div></td>";
-            echo "</tr>";
+        if(!empty($tokens)){
+            foreach($tokens as $token){
+                $form_id = 'ssl-token-manage-'.sanitize_key($token['id']);
+                $updated = !empty($token['updated']) ? date_i18n('d.m.Y H:i', (int)$token['updated']) : '—';
+                $status = isset($token['last_status']) ? $token['last_status'] : 'unknown';
+                $status_label = 'לא ידוע';
+                $dot_class = 'ssl-token-status__dot--unknown';
+                if($status === 'online'){
+                    $status_label = 'מחובר';
+                    $dot_class = 'ssl-token-status__dot--online';
+                } elseif($status === 'offline'){
+                    $status_label = 'מנותק';
+                    $dot_class = 'ssl-token-status__dot--offline';
+                }
+                $last_seen_ts = !empty($token['last_seen']) ? (int)$token['last_seen'] : 0;
+                $last_seen = $last_seen_ts ? date_i18n('d.m.Y H:i', $last_seen_ts) : '';
+                $status_meta = [];
+                if($last_seen){
+                    $status_meta[] = 'חיבור אחרון: '.$last_seen;
+                } else {
+                    $status_meta[] = 'לא התקבלה תקשורת עדיין';
+                }
+                if(!empty($token['last_error']) && $status === 'offline'){
+                    $status_meta[] = 'שגיאה אחרונה: '.$token['last_error'];
+                }
+                $status_meta[] = 'עודכן: '.$updated;
+                $stored_emails = array_filter((array)($token['emails'] ?? []));
+                $email_options = $email_choices;
+                foreach($stored_emails as $email){
+                    if($email && !isset($email_options[$email])){
+                        $email_options[$email] = $email;
+                    }
+                }
+                echo "<tr>";
+                echo "<td class='ssl-token-table__name'><input form='".esc_attr($form_id)."' type='text' name='token_name' value='".esc_attr($token['name'])."' required></td>";
+                echo "<td class='ssl-token-table__token'><input type='text' readonly value='".esc_attr($token['token'])."'></td>";
+                echo "<td class='ssl-token-table__status'><div class='ssl-token-status'><span class='ssl-token-status__dot " .esc_attr($dot_class)."' aria-hidden='true'></span><div class='ssl-token-status__text'><div class='ssl-token-status__label'>".esc_html($status_label)."</div>";
+                foreach($status_meta as $meta){
+                    $is_error = (strpos($meta, 'שגיאה אחרונה') === 0);
+                    $meta_class = $is_error ? ' ssl-token-status__meta--error' : '';
+                    echo "<div class='ssl-token-status__meta{$meta_class}'>".esc_html($meta)."</div>";
+                }
+                echo "</div></div></td>";
+                $checked = !empty($token['notify_down']) ? " checked" : '';
+                echo "<td class='ssl-token-table__notify'><label class='ssl-token-toggle'><input form='".esc_attr($form_id)."' type='checkbox' name='notify_down' value='1'{$checked}><span>שליחת התראה בנפילה</span></label></td>";
+                echo "<td class='ssl-token-table__emails'>";
+                echo "<select form='".esc_attr($form_id)."' name='token_emails[]' multiple class='ssl-token-emails__select' size='4'>";
+                foreach($email_options as $email => $label){
+                    $selected = in_array($email, $stored_emails, true) ? " selected" : '';
+                    echo "<option value='".esc_attr($email)."'{$selected}>".esc_html($label)."</option>";
+                }
+                echo "</select>";
+                echo "<input form='".esc_attr($form_id)."' type='text' name='token_emails_extra' class='ssl-token-emails__input' placeholder='כתובות נוספות (מופרדות בפסיק)'>";
+                echo "</td>";
+                echo "<td><div class='ssl-token-table__actions'>";
+                echo "<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='update'>שמור</button>";
+                echo "<button class='ssl-btn ssl-btn-surface' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='regen' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>";
+                echo "<button class='ssl-btn ssl-btn-danger' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='delete' onclick=\"return confirm('למחוק את הטוקן?')\">מחק</button>";
+                echo "</div></td>";
+                echo "</tr>";
+            }
+        } else {
+            echo "<tr><td class='ssl-empty' colspan='6'>לא נמצאו טוקנים</td></tr>";
         }
         echo "</tbody>";
         echo "</table>";
+        echo "<div class='ssl-note ssl-token-note'>ניתן לבחור מספר נמענים (Ctrl/Command) ולהוסיף כתובות נוספות בשדה החופשי. התראות ישלחו רק כאשר הטוקן מסומן לניטור.</div>";
         echo "</div>";
         return ob_get_clean();
     }
@@ -709,6 +933,10 @@ JS;
             if($token['id'] === $token_id){
                 $token['token'] = $this->generate_token_value();
                 $token['updated'] = time();
+                $token['last_status'] = 'unknown';
+                $token['last_seen'] = 0;
+                $token['last_error'] = '';
+                $token['notified_down_at'] = 0;
                 $updated = true;
                 break;
             }
@@ -733,6 +961,12 @@ JS;
             'token'   => $this->generate_token_value(),
             'created' => time(),
             'updated' => time(),
+            'last_status' => 'unknown',
+            'last_seen'   => 0,
+            'last_error'  => '',
+            'notify_down' => 0,
+            'emails'      => [],
+            'notified_down_at' => 0,
         ];
         $this->save_tokens($tokens);
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
@@ -747,6 +981,8 @@ JS;
         if($name === ''){
             $name = 'ללא שם';
         }
+        $notify = !empty($_POST['notify_down']) ? 1 : 0;
+        $emails = $this->parse_token_emails($_POST['token_emails'] ?? [], $_POST['token_emails_extra'] ?? '');
         $changed = false;
         foreach($tokens as $index => &$token){
             if($token['id'] !== $token_id){
@@ -759,8 +995,17 @@ JS;
             }
             if(in_array($sub, ['regen','update'], true)){
                 $token['name'] = $name;
+                $token['notify_down'] = $notify;
+                $token['emails'] = $emails;
+                if(!$notify){
+                    $token['notified_down_at'] = 0;
+                }
                 if($sub === 'regen'){
                     $token['token'] = $this->generate_token_value();
+                    $token['last_status'] = 'unknown';
+                    $token['last_seen'] = 0;
+                    $token['last_error'] = '';
+                    $token['notified_down_at'] = 0;
                 }
                 $token['updated'] = time();
                 $changed = true;
@@ -777,6 +1022,12 @@ JS;
                     'token'   => $this->generate_token_value(),
                     'created' => time(),
                     'updated' => time(),
+                    'last_status' => 'unknown',
+                    'last_seen'   => 0,
+                    'last_error'  => '',
+                    'notify_down' => 0,
+                    'emails'      => [],
+                    'notified_down_at' => 0,
                 ];
             }
             $this->save_tokens($tokens);
@@ -968,7 +1219,8 @@ JS;
         $tokens=$this->ensure_default_token();
         foreach($tokens as $stored){
             if(!empty($stored['token']) && hash_equals($stored['token'], $token)){
-                return true;
+                $updated = $this->mark_token_online($stored['id']);
+                return ['token' => $updated ?: $stored];
             }
         }
         return new WP_Error('forbidden','invalid token',['status'=>403]);
