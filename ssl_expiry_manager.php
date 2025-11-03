@@ -90,6 +90,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-manager{direction:rtl;font-family:"Assistant","Rubik",Arial,sans-serif;background:#fff;border-radius:16px;box-shadow:0 12px 30px rgba(15,23,42,.08);padding:24px;margin:24px auto;max-width:1200px;display:flex;flex-direction:column;gap:24px;}
 @media (max-width:768px){.ssl-manager{padding:18px;}}
 .ssl-manager__header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px;padding-bottom:16px;border-bottom:1px solid #e2e8f0;}
+.ssl-manager__header--tokens{align-items:flex-start;}
 .ssl-manager__title h2{margin:0;color:#0f172a;font-size:1.75rem;font-weight:700;}
 .ssl-manager__subtitle{color:#64748b;font-size:.95rem;margin-top:4px;}
 .ssl-manager__header-actions{display:flex;gap:10px;align-items:center;}
@@ -133,7 +134,6 @@ class SSL_Expiry_Manager_AIO {
 .ssl-token-form{display:flex;gap:10px;flex-wrap:wrap;}
 .ssl-token-form--stack{flex-direction:column;align-items:stretch;gap:16px;}
 .ssl-token-manage{display:flex;flex-direction:column;gap:16px;}
-.ssl-token-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:16px;}
 .ssl-card--token .ssl-card__body label{width:100%;}
 .ssl-card--links{border:none;box-shadow:none;padding:0;margin-top:16px;}
 .ssl-card--links .ssl-card__footer{padding:0;}
@@ -146,6 +146,19 @@ class SSL_Expiry_Manager_AIO {
 .ssl-card--form input[type=checkbox]{margin-left:6px;transform:scale(1.1);}
 .ssl-card--form .ssl-note{margin-top:4px;}
 .ssl-note{font-size:.85rem;color:#64748b;}
+.ssl-token-create{display:flex;flex-direction:column;gap:12px;}
+.ssl-token-create__fields{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
+.ssl-token-create__fields label{flex:1 1 240px;margin:0;gap:4px;}
+.ssl-token-create__fields label span{display:block;color:#475569;font-weight:600;font-size:.85rem;margin-bottom:2px;}
+.ssl-token-create__fields input[type=text]{width:100%;padding:.5rem .75rem;border-radius:10px;border:1px solid #cbd5f5;background:#f8fafc;color:#1f2937;font-size:.95rem;}
+.ssl-token-table{margin-top:8px;}
+.ssl-token-table input[type=text]{width:100%;padding:.45rem .6rem;border:1px solid #cbd5f5;border-radius:8px;background:#f8fafc;color:#0f172a;font-size:.9rem;}
+.ssl-token-table input[type=text][readonly]{cursor:text;}
+.ssl-token-table__name{min-width:220px;}
+.ssl-token-table__token{font-family:monospace;font-size:.9rem;}
+.ssl-token-table__meta{color:#64748b;font-size:.85rem;min-width:140px;}
+.ssl-token-table__actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;}
+.ssl-token-hidden-form{display:none;}
 .ssl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .ssl-table__edit-row td{background:#f8fafc;}
 .ssl-empty{text-align:center;padding:24px;font-size:1rem;color:#64748b;}
@@ -156,6 +169,8 @@ class SSL_Expiry_Manager_AIO {
  .ssl-manager__header-actions{width:100%;justify-content:stretch;}
  .ssl-manager__header-actions .ssl-btn{flex:1;}
  .ssl-actions{justify-content:center;}
+ .ssl-token-create__fields{flex-direction:column;align-items:stretch;}
+ .ssl-token-table__actions{justify-content:center;}
 }
 .ssl-err{color:#b00020;font-size:.85rem;}
 CSS;
@@ -628,44 +643,57 @@ JS;
         $manage_action = esc_attr(self::MANAGE_TOKEN_ACTION);
         ob_start();
         echo "<div class='ssl-manager'>";
-        echo "<div class='ssl-card ssl-card--form'>";
-        echo "<div class='ssl-card__header'><h2>ניהול Tokens לסוכן SSL</h2></div>";
-        echo "<div class='ssl-card__body'>";
-        echo "<p>הטוקנים הבאים זמינים לשימוש ב-Header בשם <code>X-SSL-Token</code>.</p>";
-        echo "<form class='ssl-token-form ssl-token-form--stack' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
-                ."<input type='hidden' name='action' value='{$add_action}'>"
-                ."<label>שם הטוקן<input type='text' name='token_name' placeholder='לדוגמה: סוכן ראשי' required></label>"
-                ."<button class='ssl-btn ssl-btn-primary' type='submit'>הוסף טוקן</button>"
-              ."</form>";
+        echo "<div class='ssl-manager__header ssl-manager__header--tokens'>";
+        echo "<div class='ssl-manager__title'>";
+        echo "<h2>ניהול Tokens לסוכן SSL</h2>";
+        echo "<div class='ssl-manager__subtitle'>הטוקנים הבאים זמינים לשימוש ב-Header בשם <code>X-SSL-Token</code>.</div>";
         echo "</div>";
-        echo "</div>";
-
-        echo "<div class='ssl-token-grid'>";
-        foreach($tokens as $token){
-            echo "<div class='ssl-card ssl-card--form ssl-card--token'>";
-            echo "<form class='ssl-token-manage' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
-                    ."<input type='hidden' name='action' value='{$manage_action}'>"
-                    ."<input type='hidden' name='token_id' value='".esc_attr($token['id'])."'>"
-                    ."<div class='ssl-card__body'>"
-                    ."  <label>שם הטוקן<input type='text' name='token_name' value='".esc_attr($token['name'])."' required></label>"
-                    ."  <label>ערך הטוקן<input class='ssl-token-input' type='text' readonly value='".esc_attr($token['token'])."'></label>"
-                    ."</div>"
-                    ."<div class='ssl-card__footer'>"
-                    ."  <button class='ssl-btn ssl-btn-primary' type='submit' name='sub_action' value='update'>שמור שם</button>"
-                    ."  <button class='ssl-btn ssl-btn-surface' type='submit' name='sub_action' value='regen' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>"
-                    ."  <button class='ssl-btn ssl-btn-danger' type='submit' name='sub_action' value='delete' onclick=\"return confirm('למחוק את הטוקן?')\">מחק</button>"
-                    ."</div>"
-                 ."</form>";
-            echo "</div>";
-        }
-        echo "</div>";
-
-        echo "<div class='ssl-card ssl-card--links'>";
-        echo "<div class='ssl-card__footer ssl-card__footer--links'>";
+        echo "<div class='ssl-manager__header-actions'>";
         echo "<a class='ssl-btn ssl-btn-surface' href='".esc_url($a['main_url'])."'>חזרה לטבלה הראשית</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>מעבר לסל מחזור</a>";
         echo "</div>";
         echo "</div>";
+
+        echo "<div class='ssl-card ssl-card--form ssl-card--token-create'>";
+        echo "<form class='ssl-token-create' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
+                ."<input type='hidden' name='action' value='{$add_action}'>"
+                ."<div class='ssl-token-create__fields'>"
+                ."  <label><span>שם הטוקן</span><input type='text' name='token_name' placeholder='לדוגמה: סוכן ראשי' required></label>"
+                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>הוסף טוקן</button>"
+                ."</div>"
+                ."<p class='ssl-note'>הוסיפו טוקנים לפי הצורך והשתמשו בערך שלהם בבקשות מרוחקות.</p>"
+              ."</form>";
+        echo "</div>";
+
+        $forms = '';
+        foreach($tokens as $token){
+            $form_id = 'ssl-token-manage-'.sanitize_key($token['id']);
+            $forms .= "<form id='".esc_attr($form_id)."' class='ssl-token-hidden-form' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
+                    ."<input type='hidden' name='action' value='{$manage_action}'>"
+                    ."<input type='hidden' name='token_id' value='".esc_attr($token['id'])."'>"
+                 ."</form>";
+        }
+        echo $forms;
+
+        echo "<table class='ssl-table ssl-token-table'>";
+        echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>עודכן לאחרונה</th><th style='width:220px'>פעולות</th></tr></thead>";
+        echo "<tbody>";
+        foreach($tokens as $token){
+            $form_id = 'ssl-token-manage-'.sanitize_key($token['id']);
+            $updated = !empty($token['updated']) ? date_i18n('d.m.Y H:i', (int)$token['updated']) : '—';
+            echo "<tr>";
+            echo "<td class='ssl-token-table__name'><input form='".esc_attr($form_id)."' type='text' name='token_name' value='".esc_attr($token['name'])."' required></td>";
+            echo "<td class='ssl-token-table__token'><input type='text' readonly value='".esc_attr($token['token'])."'></td>";
+            echo "<td class='ssl-token-table__meta'>".esc_html($updated)."</td>";
+            echo "<td><div class='ssl-token-table__actions'>";
+            echo "<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='update'>שמור שם</button>";
+            echo "<button class='ssl-btn ssl-btn-surface' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='regen' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>";
+            echo "<button class='ssl-btn ssl-btn-danger' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='delete' onclick=\"return confirm('למחוק את הטוקן?')\">מחק</button>";
+            echo "</div></td>";
+            echo "</tr>";
+        }
+        echo "</tbody>";
+        echo "</table>";
         echo "</div>";
         return ob_get_clean();
     }
