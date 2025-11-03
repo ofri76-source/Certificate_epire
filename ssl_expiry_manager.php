@@ -27,6 +27,7 @@ class SSL_Expiry_Manager_AIO {
     const PAGE_MAIN_FALLBACK  = 'https://kbtest.macomp.co.il/?p=9427';
     const PAGE_TRASH_FALLBACK = 'https://kbtest.macomp.co.il/?p=9441';
     const PAGE_TOKEN_FALLBACK = 'https://kbtest.macomp.co.il/?p=9447';
+    const PAGE_LOG_FALLBACK   = 'https://kbtest.macomp.co.il/?p=9458';
 
     public function __construct() {
         add_action('init', [$this,'register_cpt']);
@@ -36,6 +37,7 @@ class SSL_Expiry_Manager_AIO {
         add_shortcode('ssl_controls',   [$this,'shortcode_controls']);
         add_shortcode('ssl_token',      [$this,'shortcode_token']);
         add_shortcode('ssl_token_page', [$this,'shortcode_token_page']); // חדש
+        add_shortcode('ssl_logs',       [$this,'shortcode_logs']);
         add_action('wp_enqueue_scripts', [$this,'assets']);
 
         add_action('admin_post_nopriv_'.self::SAVE_ACTION,    [$this,'handle_save']);
@@ -192,7 +194,19 @@ class SSL_Expiry_Manager_AIO {
 .ssl-token-email-add button{padding:.45rem 1.1rem;}
 .ssl-token-email-error{font-size:.75rem;color:#b91c1c;min-height:1.1em;}
 .ssl-token-email-input--error{border-color:#f87171;box-shadow:0 0 0 2px rgba(248,113,113,.25);}
- .ssl-token-note{margin-top:12px;}
+.ssl-log-table__time{white-space:nowrap;font-variant-numeric:tabular-nums;}
+.ssl-log-table__level{min-width:110px;}
+.ssl-log-level{display:inline-flex;align-items:center;justify-content:center;padding:.3rem .75rem;border-radius:999px;font-weight:700;font-size:.8rem;letter-spacing:.03em;text-transform:uppercase;box-shadow:inset 0 -2px 0 rgba(255,255,255,.45);}
+.ssl-log-level--info{background:#e0f2fe;color:#0369a1;}
+.ssl-log-level--warning{background:#fef3c7;color:#92400e;}
+.ssl-log-level--error{background:#fee2e2;color:#b91c1c;}
+.ssl-log-table__message{max-width:320px;white-space:normal;}
+.ssl-log-table__context{min-width:260px;white-space:normal;}
+.ssl-log-context{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;}
+.ssl-log-context__key{font-weight:700;color:#0f172a;margin-left:6px;}
+.ssl-log-context__value{direction:ltr;font-family:"Fira Code","Source Code Pro",monospace;font-size:.82rem;color:#1e293b;word-break:break-all;}
+.ssl-log-context__empty{color:#94a3b8;font-style:italic;}
+.ssl-token-note{margin-top:12px;}
 .ssl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .ssl-table__edit-row td{background:#f8fafc;}
 .ssl-empty{text-align:center;padding:24px;font-size:1rem;color:#64748b;}
@@ -401,6 +415,33 @@ JS;
             }
         }
         return $clean;
+    }
+
+    private function format_log_context_display($context){
+        if(empty($context) || !is_array($context)){
+            return '<span class="ssl-log-context__empty">—</span>';
+        }
+        $items = [];
+        foreach($context as $key => $value){
+            $label = is_string($key) ? sanitize_key($key) : $key;
+            if(is_array($value)){
+                $encoded = wp_json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $value = $encoded !== false ? $encoded : '';
+            }
+            if(is_bool($value)){
+                $value = $value ? 'true' : 'false';
+            } elseif($value === null){
+                $value = 'null';
+            }
+            if(!is_scalar($value)){
+                $value = '';
+            }
+            $items[] = '<li><span class="ssl-log-context__key">'.esc_html((string)$label).'</span><span class="ssl-log-context__value">'.esc_html((string)$value).'</span></li>';
+        }
+        if(empty($items)){
+            return '<span class="ssl-log-context__empty">—</span>';
+        }
+        return '<ul class="ssl-log-context">'.implode('', $items).'</ul>';
     }
     private function log_activity($message, array $context = [], $level = 'info'){
         $level = in_array($level, ['info','warning','error'], true) ? $level : 'info';
@@ -764,6 +805,14 @@ JS;
         return $this->get_page_url('ssl-trash', self::PAGE_TRASH_FALLBACK);
     }
 
+    private function resolve_logs_page_url(){
+        $page = $this->get_page_url('ssl-logs', '');
+        if($page){
+            return $page;
+        }
+        return self::PAGE_LOG_FALLBACK;
+    }
+
     private function get_primary_token_value(){
         $token = $this->get_primary_token();
         if($token && !empty($token['token'])){
@@ -927,9 +976,11 @@ JS;
     public function shortcode_table($atts = []) {
         $default_trash = $this->resolve_trash_page_url();
         $default_token = $this->resolve_token_page_url();
+        $default_logs  = $this->resolve_logs_page_url();
         $a = shortcode_atts([
             'trash_url' => $default_trash,
             'token_url' => $default_token,
+            'logs_url'  => $default_logs,
         ], $atts);
         $is_create_hidden = empty($_GET['ssl_new']);
         $create_attr = $is_create_hidden ? ' hidden' : '';
@@ -948,6 +999,7 @@ JS;
         echo "<a class='ssl-btn ssl-btn-primary' data-ssl-toggle='create' href='".esc_url(add_query_arg('ssl_new','1'))."'>הוסף רשומה</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>סל מחזור</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['token_url'])."'>ניהול טוקנים</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
         echo "</div></div>";
 
         echo "<div class='ssl-card ssl-card--form' data-ssl-create{$create_attr}>";
@@ -1050,13 +1102,20 @@ JS;
     }
     public function shortcode_trash($atts = []) {
         $main_default = $this->resolve_main_page_url();
-        $a = shortcode_atts(['main_url' => $main_default], $atts);
+        $logs_default = $this->resolve_logs_page_url();
+        $a = shortcode_atts([
+            'main_url' => $main_default,
+            'logs_url' => $logs_default,
+        ], $atts);
         $q = new WP_Query(['post_type'=> self::CPT,'post_status'=> 'trash','posts_per_page'=> -1,'orderby'=>'modified','order'=>'DESC']);
         ob_start();
         echo "<div class='ssl-manager'>";
         echo "<div class='ssl-manager__header'>";
         echo "<div class='ssl-manager__title'><h2>סל מחזור</h2><div class='ssl-manager__subtitle'>רשומות שנמחקו נשמרות למשך 90 יום לפני מחיקה סופית.</div></div>";
-        echo "<div class='ssl-manager__header-actions'><a class='ssl-btn ssl-btn-outline' href='".esc_url($a['main_url'])."'>חזרה לטבלה</a></div>";
+        echo "<div class='ssl-manager__header-actions'>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['main_url'])."'>חזרה לטבלה</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
+        echo "</div>";
         echo "</div>";
         echo "<table class='ssl-table'><thead><tr><th>שם הלקוח</th><th>אתר</th><th>נמחק</th><th>שחזור</th></tr></thead><tbody>";
         if ($q->have_posts()){
@@ -1084,10 +1143,12 @@ JS;
         $main_default = $this->resolve_main_page_url();
         $default_token = $this->resolve_token_page_url();
         $default_trash = $this->resolve_trash_page_url();
+        $default_logs  = $this->resolve_logs_page_url();
         $a = shortcode_atts([
             'main_url'=>$main_default,
             'trash_url'=>$default_trash,
             'token_url'=>$default_token,
+            'logs_url'=>$default_logs,
         ], $atts);
         $export_url = site_url('?ssl_action='.self::EXPORT_ACTION);
         $import_action = esc_attr(self::IMPORT_ACTION);
@@ -1099,6 +1160,7 @@ JS;
         echo "<a class='ssl-btn ssl-btn-primary' href='".esc_url(add_query_arg('ssl_new','1',$a['main_url']))."'>הוסף רשומה</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>סל מחזור</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['token_url'])."'>ניהול טוקנים</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
         echo "</div></div>";
         echo "<div class='ssl-toolbar'>";
         echo "<div class='ssl-toolbar__group'><a class='ssl-btn ssl-btn-surface' href='".esc_url($export_url)."'>ייצוא CSV</a>";
@@ -1136,9 +1198,11 @@ JS;
     public function shortcode_token_page($atts = []) {
         $main_default = $this->resolve_main_page_url();
         $trash_default = $this->resolve_trash_page_url();
+        $logs_default  = $this->resolve_logs_page_url();
         $a = shortcode_atts([
             'main_url'  => $main_default,
             'trash_url' => $trash_default,
+            'logs_url'  => $logs_default,
         ], $atts);
         $tokens = $this->ensure_default_token();
         $add_action    = esc_attr(self::ADD_TOKEN_ACTION);
@@ -1154,6 +1218,7 @@ JS;
         echo "<div class='ssl-manager__header-actions'>";
         echo "<a class='ssl-btn ssl-btn-surface' href='".esc_url($a['main_url'])."'>חזרה לטבלה הראשית</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>מעבר לסל מחזור</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
         echo "</div>";
         echo "</div>";
 
@@ -1269,6 +1334,61 @@ JS;
         echo "</tbody>";
         echo "</table>";
         echo "<div class='ssl-note ssl-token-note'>הוסיפו נמענים חדשים באמצעות השדה והכפתור, והסירו כתובות בעזרת כפתור ה-X שמופיע ליד כל נמען. התראות נשלחות רק כאשר הטוקן מסומן לניטור.</div>";
+        echo "</div>";
+        return ob_get_clean();
+    }
+
+    public function shortcode_logs($atts = []) {
+        $main_default  = $this->resolve_main_page_url();
+        $trash_default = $this->resolve_trash_page_url();
+        $token_default = $this->resolve_token_page_url();
+        $a = shortcode_atts([
+            'limit'    => 100,
+            'main_url' => $main_default,
+            'trash_url'=> $trash_default,
+            'token_url'=> $token_default,
+        ], $atts);
+        $limit = absint($a['limit']);
+        if($limit === 0){
+            $limit = 100;
+        }
+        $limit = min($limit, 200);
+        $log_entries = array_reverse($this->get_activity_log());
+        if($limit > 0){
+            $log_entries = array_slice($log_entries, 0, $limit);
+        }
+        ob_start();
+        echo "<div class='ssl-manager'>";
+        echo "<div class='ssl-manager__header'>";
+        echo "<div class='ssl-manager__title'><h2>לוג פעילות הסוכן</h2><div class='ssl-manager__subtitle'>מוצגות עד ".esc_html($limit)." הרשומות האחרונות.</div></div>";
+        echo "<div class='ssl-manager__header-actions'>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['main_url'])."'>חזרה לטבלה</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>סל מחזור</a>";
+        echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['token_url'])."'>ניהול טוקנים</a>";
+        echo "</div>";
+        echo "</div>";
+        if(empty($log_entries)){
+            echo "<div class='ssl-empty'>לא נמצאו רשומות פעילות עדיין.</div>";
+        } else {
+            echo "<table class='ssl-table ssl-log-table'><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>";
+            foreach($log_entries as $entry){
+                $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                $raw_level = strtolower(is_string($entry['level'] ?? '') ? $entry['level'] : '');
+                if(!in_array($raw_level, ['info','warning','error'], true)){
+                    $raw_level = 'info';
+                }
+                $level_label = strtoupper($raw_level);
+                $message = esc_html($entry['message'] ?? '');
+                $context_html = $this->format_log_context_display($entry['context'] ?? []);
+                echo "<tr>";
+                echo "<td class='ssl-log-table__time'>".esc_html($time)."</td>";
+                echo "<td class='ssl-log-table__level'><span class='ssl-log-level ssl-log-level--".esc_attr($raw_level)."'>".esc_html($level_label)."</span></td>";
+                echo "<td class='ssl-log-table__message'>".$message."</td>";
+                echo "<td class='ssl-log-table__context'>".$context_html."</td>";
+                echo "</tr>";
+            }
+            echo "</tbody></table>";
+        }
         echo "</div>";
         return ob_get_clean();
     }
