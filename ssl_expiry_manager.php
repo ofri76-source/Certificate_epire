@@ -112,6 +112,15 @@ class SSL_Expiry_Manager_AIO {
 .ssl-toolbar__group--end{justify-content:flex-end;}
 .ssl-toolbar__import{justify-content:space-between;flex-wrap:wrap;}
 .ssl-toolbar__import input[type=file]{flex:1 1 180px;font-size:.9rem;color:#475569;}
+.ssl-page-size{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #cbd5f5;border-radius:10px;padding:6px 12px;font-size:.9rem;color:#1e293b;}
+.ssl-page-size label{display:flex;align-items:center;gap:8px;margin:0;font-weight:600;color:#1e293b;}
+.ssl-page-size select{border:none;background:transparent;font-size:.95rem;font-weight:600;color:#1e293b;min-width:80px;padding:0;}
+.ssl-page-size select:focus{outline:none;}
+.ssl-pagination{margin-top:16px;display:flex;justify-content:center;}
+.ssl-pagination__list{display:flex;gap:6px;list-style:none;margin:0;padding:0;}
+.ssl-pagination__item .page-numbers{display:inline-flex;align-items:center;justify-content:center;padding:.45rem .9rem;border-radius:10px;border:1px solid #cbd5f5;background:#fff;color:#1e293b;font-weight:600;min-width:42px;text-decoration:none;transition:background .15s ease,color .15s ease,box-shadow .15s ease;}
+.ssl-pagination__item .page-numbers:hover{background:#eef2ff;color:#1e3a8a;}
+.ssl-pagination__item .page-numbers.current{background:linear-gradient(135deg,#4c6ef5,#364fc7);color:#fff;border-color:transparent;box-shadow:0 10px 18px rgba(54,79,199,.28);}
 .ssl-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:.55rem 1.3rem;border-radius:10px;border:1px solid transparent;font-weight:600;font-size:.95rem;cursor:pointer;text-decoration:none;transition:transform .15s ease,box-shadow .15s ease,background .15s ease,color .15s ease;}
 .ssl-btn:focus{outline:2px solid #c7d2fe;outline-offset:2px;}
 .ssl-btn.is-active{box-shadow:0 0 0 3px rgba(76,110,245,.25);}
@@ -383,6 +392,18 @@ window.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('[data-email-list]').forEach(function(wrapper){
     sslEmailEnsure(wrapper);
   });
+  document.querySelectorAll('[data-ssl-page-size]').forEach(function(select){
+    select.addEventListener('change',function(){
+      var form = select.closest('form');
+      if(form){
+        var pageInput = form.querySelector('[data-ssl-page-input]');
+        if(pageInput){
+          pageInput.value = '1';
+        }
+        form.submit();
+      }
+    });
+  });
 });
 JS;
         wp_register_script('ssl-expiry-manager-js','',[],false,true);
@@ -442,6 +463,30 @@ JS;
             return '<span class="ssl-log-context__empty">—</span>';
         }
         return '<ul class="ssl-log-context">'.implode('', $items).'</ul>';
+    }
+    private function get_current_actor_context(){
+        $context = ['actor' => 'מערכת'];
+        if(function_exists('is_user_logged_in') && is_user_logged_in()){
+            $user = wp_get_current_user();
+            if($user && $user->ID){
+                $label = $user->display_name ?: $user->user_login;
+                if(!$label){
+                    $label = 'משתמש #'.$user->ID;
+                }
+                $context['actor'] = $label;
+                $context['actor_id'] = (int)$user->ID;
+                if(!empty($user->user_email)){
+                    $context['actor_email'] = sanitize_email($user->user_email);
+                }
+                return $context;
+            }
+        }
+        if(!empty($_SERVER['REMOTE_ADDR'])){
+            $ip = sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR']));
+            $context['actor'] = 'אורח '.$ip;
+            $context['actor_ip'] = $ip;
+        }
+        return $context;
     }
     private function log_activity($message, array $context = [], $level = 'info'){
         $level = in_array($level, ['info','warning','error'], true) ? $level : 'info';
@@ -556,10 +601,18 @@ JS;
         $queue = array_values($queue);
         $this->save_task_queue($queue);
         update_post_meta($post_id,'expiry_ts_checked_at', time());
-        $this->log_activity('המשימה נוספה לתור', ['id' => $post_id, 'context' => $context, 'url' => $url]);
+        $post = get_post($post_id);
+        $client_name = (string)get_post_meta($post_id,'client_name',true);
+        $this->log_activity('המשימה נוספה לתור', array_merge([
+            'id' => $post_id,
+            'context' => $context,
+            'site_url' => $url,
+            'client_name' => $client_name,
+            'check_name' => $post ? $post->post_title : $client_name,
+        ], $this->get_current_actor_context()));
         return true;
     }
-    private function claim_queue_tasks($limit, $agent_filter = null){
+    private function claim_queue_tasks($limit, $agent_filter = null, $token_label = ''){
         $limit = min(100, max(1, (int)$limit));
         $queue = $this->get_task_queue();
         $changed = $this->release_stale_claims($queue);
@@ -589,7 +642,20 @@ JS;
             $this->save_task_queue($queue);
         }
         if(!empty($claimed)){
-            $this->log_activity('משימות נמסרו לסוכן', ['count' => count($claimed)]);
+            $jobs = [];
+            foreach($claimed as $job){
+                $jobs[] = [
+                    'id' => (int)$job['id'],
+                    'client_name' => $job['client_name'],
+                    'site_url' => $job['site_url'],
+                    'context' => $job['context'],
+                ];
+            }
+            $this->log_activity('משימות נמסרו לסוכן', array_merge([
+                'count' => count($claimed),
+                'token' => $token_label,
+                'jobs' => $jobs,
+            ], $this->get_current_actor_context()));
         }
         $callback = rest_url('ssl-agent/v1/report');
         foreach($claimed as &$job){
@@ -623,27 +689,54 @@ JS;
         }
         return $tasks;
     }
-    private function complete_queue_task($post_id, $request_id, $success = true, $message = ''){
+    private function complete_queue_task($post_id, $request_id, $success = true, $message = '', array $extra_context = []){
         $post_id = (int)$post_id;
         $request_id = (string)$request_id;
         $queue = $this->get_task_queue();
         $removed = false;
+        $job_context = null;
         foreach($queue as $index => $item){
             if((int)$item['id'] === $post_id){
                 if($request_id && $item['request_id'] !== $request_id){
                     continue;
                 }
+                $job_context = $item;
                 unset($queue[$index]);
                 $removed = true;
             }
         }
         if($removed){
             $this->save_task_queue(array_values($queue));
-            $this->log_activity($success ? 'משימה הושלמה' : 'משימה נכשלה', [
-                'id' => $post_id,
-                'request_id' => $request_id,
-                'message' => $message,
-            ], $success ? 'info' : 'error');
+        }
+        $post = get_post($post_id);
+        $client_name = is_array($job_context) && isset($job_context['client_name']) ? $job_context['client_name'] : ($post ? get_post_meta($post_id,'client_name',true) : '');
+        $site_url = is_array($job_context) && isset($job_context['site_url']) ? $job_context['site_url'] : ($post ? get_post_meta($post_id,'site_url',true) : '');
+        $attempts = is_array($job_context) && isset($job_context['attempts']) ? (int)$job_context['attempts'] : 0;
+        $context_label = is_array($job_context) && isset($job_context['context']) ? $job_context['context'] : '';
+        $agent_only_flag = is_array($job_context) && !empty($job_context['agent_only']);
+        $log_context = array_merge([
+            'id' => $post_id,
+            'request_id' => $request_id,
+            'site_url' => $site_url,
+            'client_name' => $client_name,
+            'check_name' => $post ? $post->post_title : $client_name,
+            'queue_context' => $context_label,
+            'status' => $success ? 'success' : 'failure',
+            'message' => $message,
+            'attempts' => $attempts,
+            'agent_only' => $agent_only_flag,
+            'checked_at' => date_i18n('Y-m-d H:i:s'),
+        ], $extra_context, $this->get_current_actor_context());
+        if(!empty($log_context['expiry_ts'])){
+            $log_context['expiry_ts'] = (int)$log_context['expiry_ts'];
+            if($log_context['expiry_ts'] > 0){
+                $log_context['expiry_date'] = date_i18n('Y-m-d', $log_context['expiry_ts']);
+            }
+        }
+        if($removed){
+            $this->log_activity($success ? 'משימת בדיקה הסתיימה' : 'משימת בדיקה נכשלה', $log_context, $success ? 'info' : 'error');
+        } else {
+            $this->log_activity('משימה שלא נמצאה בתור', $log_context, 'warning');
         }
     }
     public function ensure_token_store(){
@@ -982,6 +1075,21 @@ JS;
             'token_url' => $default_token,
             'logs_url'  => $default_logs,
         ], $atts);
+        $per_page_choices = [25, 100, 500];
+        $requested_per_page = isset($_GET['ssl_per_page']) ? intval($_GET['ssl_per_page']) : 25;
+        if(!in_array($requested_per_page, $per_page_choices, true)){
+            $requested_per_page = 25;
+        }
+        $current_page = isset($_GET['ssl_page']) ? max(1, intval($_GET['ssl_page'])) : 1;
+        $preserved_query = [];
+        if(!empty($_GET)){
+            foreach($_GET as $key => $value){
+                if(is_array($value)){
+                    continue;
+                }
+                $preserved_query[$key] = sanitize_text_field(wp_unslash($value));
+            }
+        }
         $is_create_hidden = empty($_GET['ssl_new']);
         $create_attr = $is_create_hidden ? ' hidden' : '';
         $admin_email = sanitize_email(get_option('admin_email'));
@@ -1000,6 +1108,23 @@ JS;
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>סל מחזור</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['token_url'])."'>ניהול טוקנים</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
+        echo "<form class='ssl-page-size' method='get'>";
+        foreach($preserved_query as $key => $value){
+            if(in_array($key, ['ssl_per_page','ssl_page'], true)){
+                continue;
+            }
+            echo "<input type='hidden' name='".esc_attr($key)."' value='".esc_attr($value)."'>";
+        }
+        echo "<input type='hidden' name='ssl_page' value='1' data-ssl-page-input>";
+        echo "<label>רשומות בדף<select name='ssl_per_page' data-ssl-page-size>";
+        foreach($per_page_choices as $choice){
+            $label = number_format_i18n($choice);
+            $selected = selected($requested_per_page, $choice, false);
+            echo "<option value='".esc_attr($choice)."'{$selected}>".esc_html($label).' רשומות' ."</option>";
+        }
+        echo "</select></label>";
+        echo "<noscript><button class='ssl-btn ssl-btn-outline' type='submit'>עדכן</button></noscript>";
+        echo "</form>";
         echo "</div></div>";
 
         echo "<div class='ssl-card ssl-card--form' data-ssl-create{$create_attr}>";
@@ -1021,7 +1146,15 @@ JS;
               ."<div class='ssl-note'>בדיקה אוטומטית יומית לאתרים ציבוריים. פנימיים יסומנו Agent בלבד.</div>"
               ."</div>";
 
-        $q = new WP_Query(['post_type'=> self::CPT,'post_status'=> ['publish','draft','pending'],'posts_per_page'=> -1,'orderby'=>'title','order'=>'ASC']);
+        $query_args = [
+            'post_type'      => self::CPT,
+            'post_status'    => ['publish','draft','pending'],
+            'posts_per_page' => $requested_per_page,
+            'orderby'        => 'title',
+            'order'          => 'ASC',
+            'paged'          => $current_page,
+        ];
+        $q = new WP_Query($query_args);
 
         echo "<table class='ssl-table'><thead><tr>"
                 ."<th>שם הלקוח</th><th>אתר</th><th>פתיחה</th><th>תאריך תפוגה</th><th>ימים</th><th>ליקוט</th><th>הערות</th><th>תמונות</th><th>שגיאה</th><th>פעולות</th>"
@@ -1084,6 +1217,38 @@ JS;
             echo "<tr><td class='ssl-empty' colspan='10'>אין נתונים</td></tr>";
         }
         echo "</tbody></table>";
+        $total_pages = (int)$q->max_num_pages;
+        if($total_pages > 1){
+            $pagination_args = [];
+            foreach($preserved_query as $key => $value){
+                if($key === 'ssl_page'){
+                    continue;
+                }
+                if($key === 'ssl_per_page'){
+                    continue;
+                }
+                $pagination_args[$key] = $value;
+            }
+            $pagination_args['ssl_per_page'] = $requested_per_page;
+            $base_url = remove_query_arg('ssl_page', add_query_arg([]));
+            $links = paginate_links([
+                'base'      => add_query_arg('ssl_page', '%#%', $base_url),
+                'format'    => '',
+                'current'   => $current_page,
+                'total'     => $total_pages,
+                'type'      => 'array',
+                'add_args'  => $pagination_args,
+                'prev_text' => '&laquo; הקודם',
+                'next_text' => 'הבא &raquo;',
+            ]);
+            if(!empty($links)){
+                echo "<div class='ssl-pagination'><ul class='ssl-pagination__list'>";
+                foreach($links as $link){
+                    echo "<li class='ssl-pagination__item'>".$link."</li>";
+                }
+                echo "</ul></div>";
+            }
+        }
         echo "<div class='ssl-note'>צבעים: ירוק &gt; 90. צהוב 31–90. אדום ≤ 30.</div>";
         echo "<div class='ssl-footer-tools'>";
         echo "  <div class='ssl-toolbar ssl-toolbar--bottom'>";
@@ -1400,8 +1565,10 @@ JS;
             $token_id = $tokens[0]['id'];
         }
         $updated = false;
+        $token_name = '';
         foreach($tokens as &$token){
             if($token['id'] === $token_id){
+                $token_name = $token['name'];
                 $token['token'] = $this->generate_token_value();
                 $token['updated'] = time();
                 $token['last_status'] = 'unknown';
@@ -1415,6 +1582,10 @@ JS;
         unset($token);
         if($updated){
             $this->save_tokens($tokens);
+            $this->log_activity('טוקן אופס מחדש', array_merge([
+                'token_id' => $token_id,
+                'token_name' => $token_name,
+            ], $this->get_current_actor_context()));
         }
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
@@ -1426,7 +1597,7 @@ JS;
         if($name === ''){
             $name = 'ללא שם';
         }
-        $tokens[] = [
+        $new_token = [
             'id'      => $this->generate_token_id(),
             'name'    => $name,
             'token'   => $this->generate_token_value(),
@@ -1439,7 +1610,12 @@ JS;
             'emails'      => [],
             'notified_down_at' => 0,
         ];
+        $tokens[] = $new_token;
         $this->save_tokens($tokens);
+        $this->log_activity('טוקן חדש נוצר', array_merge([
+            'token_id' => $new_token['id'],
+            'token_name' => $new_token['name'],
+        ], $this->get_current_actor_context()));
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
 
@@ -1455,16 +1631,24 @@ JS;
         $notify = !empty($_POST['notify_down']) ? 1 : 0;
         $emails = $this->parse_token_emails($_POST['token_emails'] ?? [], $_POST['token_emails_extra'] ?? '');
         $changed = false;
+        $log_action = '';
+        $log_context = [];
         foreach($tokens as $index => &$token){
             if($token['id'] !== $token_id){
                 continue;
             }
             if($sub === 'delete'){
+                $log_action = 'delete';
+                $log_context = [
+                    'token_id' => $token['id'],
+                    'token_name' => $token['name'],
+                ];
                 unset($tokens[$index]);
                 $changed = true;
                 break;
             }
             if(in_array($sub, ['regen','update'], true)){
+                $log_action = $sub === 'regen' ? 'regen' : 'update';
                 $token['name'] = $name;
                 $token['notify_down'] = $notify;
                 $token['emails'] = $emails;
@@ -1479,6 +1663,15 @@ JS;
                     $token['notified_down_at'] = 0;
                 }
                 $token['updated'] = time();
+                $log_context = [
+                    'token_id' => $token['id'],
+                    'token_name' => $token['name'],
+                    'notify_down' => (bool)$notify,
+                    'emails' => $emails,
+                ];
+                if($sub === 'regen'){
+                    $log_context['regenerated'] = true;
+                }
                 $changed = true;
             }
             break;
@@ -1487,7 +1680,7 @@ JS;
         if($changed){
             $tokens = array_values($tokens);
             if(empty($tokens)){
-                $tokens[] = [
+                $default_token = [
                     'id'      => $this->generate_token_id(),
                     'name'    => 'Token ראשי',
                     'token'   => $this->generate_token_value(),
@@ -1500,8 +1693,22 @@ JS;
                     'emails'      => [],
                     'notified_down_at' => 0,
                 ];
+                $tokens[] = $default_token;
+                $this->log_activity('נוצר טוקן ברירת מחדל חדש', array_merge([
+                    'token_id' => $default_token['id'],
+                    'token_name' => $default_token['name'],
+                ], $this->get_current_actor_context()));
             }
             $this->save_tokens($tokens);
+            if($log_action){
+                $messages = [
+                    'delete' => 'טוקן נמחק',
+                    'regen'  => 'טוקן אופס מחדש',
+                    'update' => 'טוקן עודכן',
+                ];
+                $message = $messages[$log_action] ?? 'שינוי טוקן';
+                $this->log_activity($message, array_merge($log_context, $this->get_current_actor_context()));
+            }
         }
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
@@ -1518,6 +1725,7 @@ JS;
             'local_fallback' => $local_fallback,
         ];
         update_option(self::OPTION_REMOTE, $settings);
+        $this->log_activity('עודכנו הגדרות הסוכן המרוחק', array_merge($settings, $this->get_current_actor_context()));
         $redirect = add_query_arg([
             'page' => 'ssl-expiry-api',
             'remote-updated' => 1,
@@ -1529,6 +1737,7 @@ JS;
     public function handle_save() {
         $this->check_nonce();
         $post_id=intval($_POST['post_id'] ?? 0);
+        $is_new = $post_id ? false : true;
         $client=sanitize_text_field($_POST['client_name'] ?? '');
         $site=$this->sanitize_url($_POST['site_url'] ?? '');
         $expiry_date=sanitize_text_field($_POST['expiry_date'] ?? '');
@@ -1549,6 +1758,8 @@ JS;
             update_post_meta($post_id,'notes',$notes);
             update_post_meta($post_id,'agent_only',$agent_only);
 
+            $dispatched = false;
+            $fallback_used = false;
             if(!empty($_FILES['images']) && is_array($_FILES['images']['name'])){
                 $ids=get_post_meta($post_id,'images',true); if(!is_array($ids)) $ids=[];
                 $f=$_FILES['images'];
@@ -1570,20 +1781,64 @@ JS;
             }
             if($site){
                 $settings = $this->get_remote_client_settings();
-                if(!$this->dispatch_remote_check($post_id, $site, 'manual-save', $settings) && !empty($settings['local_fallback'])){
+                if($this->dispatch_remote_check($post_id, $site, 'manual-save', $settings)){
+                    $dispatched = true;
+                } elseif(!empty($settings['local_fallback'])){
                     $exp_ts = $this->fetch_ssl_expiry_ts($site);
                     if($exp_ts){
                         update_post_meta($post_id,'expiry_ts',$exp_ts);
                         update_post_meta($post_id,'source','auto');
                         delete_post_meta($post_id,'last_error');
+                        $fallback_used = true;
                     }
                 }
             }
+            $this->log_activity($is_new ? 'נוצרה רשומת SSL חדשה' : 'עודכנה רשומת SSL קיימת', array_merge([
+                'id' => $post_id,
+                'client_name' => $client,
+                'site_url' => $site,
+                'source' => $source,
+                'agent_only' => (bool)$agent_only,
+                'dispatched_to_agent' => $dispatched,
+                'local_fallback_used' => $fallback_used,
+            ], $this->get_current_actor_context()));
         }
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
-    public function handle_delete(){ $this->check_nonce(); $id=intval($_POST['post_id']??0); if($id) wp_trash_post($id); wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit; }
-    public function handle_restore(){ $this->check_nonce(); $id=intval($_POST['post_id']??0); if($id) wp_untrash_post($id); wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit; }
+    public function handle_delete(){
+        $this->check_nonce();
+        $id=intval($_POST['post_id']??0);
+        if($id){
+            $post = get_post($id);
+            $client = get_post_meta($id,'client_name',true);
+            $site = get_post_meta($id,'site_url',true);
+            wp_trash_post($id);
+            $this->log_activity('רשומת SSL הועברה לסל המחזור', array_merge([
+                'id' => $id,
+                'client_name' => $client,
+                'site_url' => $site,
+                'post_title' => $post ? $post->post_title : '',
+            ], $this->get_current_actor_context()));
+        }
+        wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
+    }
+    public function handle_restore(){
+        $this->check_nonce();
+        $id=intval($_POST['post_id']??0);
+        if($id){
+            $post = get_post($id);
+            $client = get_post_meta($id,'client_name',true);
+            $site = get_post_meta($id,'site_url',true);
+            wp_untrash_post($id);
+            $this->log_activity('רשומת SSL שוחזרה', array_merge([
+                'id' => $id,
+                'client_name' => $client,
+                'site_url' => $site,
+                'post_title' => $post ? $post->post_title : '',
+            ], $this->get_current_actor_context()));
+        }
+        wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
+    }
 
     public function handle_export() {
         $filename='ssl-export-'.date('Ymd-His').'.csv';
@@ -1592,6 +1847,7 @@ JS;
         $out=fopen('php://output','w');
         fputcsv($out,['client_name','site_url','expiry_date','source','notes','image_urls','agent_only']);
         $q=new WP_Query(['post_type'=>self::CPT,'post_status'=>['publish','draft','pending','trash'],'posts_per_page'=>-1]);
+        $exported = 0;
         if($q->have_posts()){
             while($q->have_posts()){ $q->the_post();
                 $id=get_the_ID();
@@ -1604,17 +1860,27 @@ JS;
                 $imgs=get_post_meta($id,'images',true); $urls=[];
                 if(is_array($imgs)) foreach($imgs as $aid){ $u=wp_get_attachment_url($aid); if($u) $urls[]=$u; }
                 fputcsv($out,[$client,$site,$expiry?date('Y-m-d',$expiry):'',$src,$notes,implode('|',$urls),$agent_only]);
+                $exported++;
             }
             wp_reset_postdata();
         }
-        fclose($out); exit;
+        fclose($out);
+        $this->log_activity('בוצע ייצוא CSV', array_merge([
+            'filename' => $filename,
+            'exported' => $exported,
+        ], $this->get_current_actor_context()));
+        exit;
     }
 
     public function handle_import() {
         $this->check_nonce();
         if(empty($_FILES['csv']) || $_FILES['csv']['error']!==UPLOAD_ERR_OK) wp_die('קובץ CSV לא תקין');
+        $uploaded_name = sanitize_file_name($_FILES['csv']['name'] ?? '');
         $fh=fopen($_FILES['csv']['tmp_name'],'r'); if(!$fh) wp_die('כשל בקריאת קובץ');
         $header=fgetcsv($fh);
+        $created = 0;
+        $rows_logged = [];
+        $rows_extra = 0;
         while(($row=fgetcsv($fh))!==false){
             $row=array_pad($row,7,''); list($client,$site,$exp,$src,$notes,$image_urls,$agent_only)=$row;
             $pid=wp_insert_post(['post_type'=>self::CPT,'post_status'=>'publish','post_title'=>$client?:'SSL Item']); if(is_wp_error($pid)) continue;
@@ -1624,8 +1890,24 @@ JS;
             update_post_meta($pid,'source', in_array($src,['manual','auto'],true)?$src:'manual');
             update_post_meta($pid,'notes',sanitize_textarea_field($notes));
             update_post_meta($pid,'agent_only',(int)!!$agent_only);
+            $created++;
+            if(count($rows_logged) < 10){
+                $rows_logged[] = [
+                    'id' => $pid,
+                    'client_name' => sanitize_text_field($client),
+                    'site_url' => $this->sanitize_url($site),
+                ];
+            } else {
+                $rows_extra++;
+            }
         }
         fclose($fh);
+        $this->log_activity('בוצע ייבוא CSV', array_merge([
+            'filename' => $uploaded_name,
+            'created' => $created,
+            'records' => $rows_logged,
+            'records_additional' => $rows_extra,
+        ], $this->get_current_actor_context()));
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
 
@@ -1660,6 +1942,13 @@ JS;
                         update_post_meta($id,'expiry_ts',$exp_ts);
                         update_post_meta($id,'source','auto');
                         delete_post_meta($id,'last_error');
+                        $this->log_activity('בדיקת SSL מקומית עודכנה', array_merge([
+                            'id' => $id,
+                            'client_name' => get_post_meta($id,'client_name',true),
+                            'site_url' => $url,
+                            'expiry_ts' => $exp_ts,
+                            'context' => 'cron',
+                        ], $this->get_current_actor_context()));
                     }
                 }
             }
@@ -1782,6 +2071,7 @@ JS;
     private function rest_auth($req){
         $token=$req->get_header('x-agent-token') ?: '';
         if(!$token){
+            $this->log_activity('בקשת Agent ללא טוקן', $this->get_current_actor_context(), 'warning');
             return new WP_Error('forbidden','invalid token',['status'=>403]);
         }
         $tokens=$this->ensure_default_token();
@@ -1790,11 +2080,17 @@ JS;
                 $previous_status = isset($stored['last_status']) ? (string)$stored['last_status'] : 'unknown';
                 $updated = $this->mark_token_online($stored['id']);
                 if($previous_status !== 'online'){
-                    $this->log_activity('סוכן אומת בהצלחה', ['token' => $stored['name'] ?? $stored['id']]);
+                    $this->log_activity('סוכן אומת בהצלחה', array_merge([
+                        'token' => $stored['name'] ?? $stored['id'],
+                    ], $this->get_current_actor_context()));
                 }
                 return ['token' => $updated ?: $stored];
             }
         }
+        $fragment = substr($token, 0, 8);
+        $this->log_activity('ניסיון אימות טוקן נכשל', array_merge([
+            'token_fragment' => $fragment,
+        ], $this->get_current_actor_context()), 'warning');
         return new WP_Error('forbidden','invalid token',['status'=>403]);
     }
     public function rest_tasks(WP_REST_Request $req){
@@ -1820,9 +2116,19 @@ JS;
         } else {
             $agent_filter = intval($agent_param) === 1 ? true : (intval($agent_param) === 0 ? false : null);
         }
-        $items=$this->claim_queue_tasks($limit,$agent_filter);
+        $token_data = is_array($auth) && isset($auth['token']) && is_array($auth['token']) ? $auth['token'] : [];
+        $token_label = '';
+        if(!empty($token_data['name'])){
+            $token_label = (string)$token_data['name'];
+        } elseif(!empty($token_data['id'])){
+            $token_label = (string)$token_data['id'];
+        }
+        $items=$this->claim_queue_tasks($limit,$agent_filter,$token_label);
         if($force){
-            $this->log_activity('סוכן דרש משימות בכפייה', ['limit' => $limit]);
+            $this->log_activity('סוכן דרש משימות בכפייה', array_merge([
+                'limit' => $limit,
+                'token' => $token_label,
+            ], $this->get_current_actor_context()));
         }
         $queue = $this->get_task_queue();
         return new WP_REST_Response([
@@ -1835,18 +2141,56 @@ JS;
         $auth=$this->rest_auth($req); if(is_wp_error($auth)) return $auth;
         $data=$req->get_json_params();
         $rows=is_array($data['results']??null)?$data['results']:[];
+        $token_data = is_array($auth) && isset($auth['token']) && is_array($auth['token']) ? $auth['token'] : [];
+        $token_label = '';
+        if(!empty($token_data['name'])){
+            $token_label = (string)$token_data['name'];
+        } elseif(!empty($token_data['id'])){
+            $token_label = (string)$token_data['id'];
+        }
         foreach($rows as $row){
             $id=intval($row['id']??0); if(!$id) continue;
             $request_id = isset($row['request_id']) ? sanitize_text_field($row['request_id']) : '';
             $error_message = '';
-            if(!empty($row['expiry_ts'])){ update_post_meta($id,'expiry_ts',intval($row['expiry_ts'])); update_post_meta($id,'source','auto'); delete_post_meta($id,'last_error'); }
+            $expiry_ts = !empty($row['expiry_ts']) ? intval($row['expiry_ts']) : 0;
+            if($expiry_ts){ update_post_meta($id,'expiry_ts',$expiry_ts); update_post_meta($id,'source','auto'); delete_post_meta($id,'last_error'); }
             if(!empty($row['error'])){ $error_message = sanitize_text_field($row['error']); update_post_meta($id,'last_error',$error_message); }
             update_post_meta($id,'expiry_ts_checked_at', time());
-            if($error_message){
-                $this->complete_queue_task($id,$request_id,false,$error_message);
-            } else {
-                $this->complete_queue_task($id,$request_id,true,'');
+            $check_label = !empty($row['check_name']) ? sanitize_text_field($row['check_name']) : '';
+            $status_label = !empty($row['status']) ? sanitize_text_field($row['status']) : '';
+            $latency_ms = isset($row['latency_ms']) ? intval($row['latency_ms']) : 0;
+            $extra = [
+                'token' => $token_label,
+            ];
+            if($check_label !== ''){
+                $extra['agent_check'] = $check_label;
             }
+            if($status_label !== ''){
+                $extra['agent_status'] = $status_label;
+            }
+            if($latency_ms > 0){
+                $extra['latency_ms'] = $latency_ms;
+            }
+            if($expiry_ts){
+                $extra['expiry_ts'] = $expiry_ts;
+            }
+            if(!empty($row['executed_at'])){
+                $extra['agent_executed_at'] = sanitize_text_field($row['executed_at']);
+            }
+            if(!empty($row['initiator'])){
+                $extra['initiator'] = sanitize_text_field($row['initiator']);
+            }
+            if($error_message){
+                $extra['error'] = $error_message;
+                $this->complete_queue_task($id,$request_id,false,$error_message,$extra);
+            } else {
+                $this->complete_queue_task($id,$request_id,true,'',$extra);
+            }
+        }
+        if(empty($rows)){
+            $this->log_activity('דוח סוכן התקבל ללא תוצאות', array_merge([
+                'token' => $token_label,
+            ], $this->get_current_actor_context()));
         }
         return new WP_REST_Response(['ok'=>true,'updated'=>count($rows)],200);
     }
