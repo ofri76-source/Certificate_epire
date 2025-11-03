@@ -1560,6 +1560,91 @@ JS;
         return (int)$parsed['validTo_time_t'];
     }
 
+    private function collect_rest_tasks($limit, $force = false, $agent_filter = null){
+        $limit = min(100, max(1, (int)$limit));
+        $now = time();
+        $stale = $now - DAY_IN_SECONDS;
+
+        $meta_query = [
+            'relation' => 'AND',
+            [
+                'key' => 'site_url',
+                'value' => '',
+                'compare' => '!=',
+            ],
+        ];
+
+        if(!$force){
+            $meta_query[] = [
+                'relation' => 'OR',
+                [
+                    'key' => 'expiry_ts_checked_at',
+                    'value' => $stale,
+                    'compare' => '<=',
+                    'type' => 'NUMERIC',
+                ],
+                [
+                    'key' => 'expiry_ts_checked_at',
+                    'compare' => 'NOT EXISTS',
+                ],
+            ];
+        }
+
+        if($agent_filter === true){
+            $meta_query[] = [
+                'key' => 'agent_only',
+                'value' => 1,
+                'compare' => '=',
+                'type' => 'NUMERIC',
+            ];
+        } elseif($agent_filter === false){
+            $meta_query[] = [
+                'relation' => 'OR',
+                [
+                    'key' => 'agent_only',
+                    'value' => 0,
+                    'compare' => '=',
+                    'type' => 'NUMERIC',
+                ],
+                [
+                    'key' => 'agent_only',
+                    'compare' => 'NOT EXISTS',
+                ],
+            ];
+        }
+
+        $query_args = [
+            'post_type'      => self::CPT,
+            'post_status'    => ['publish','draft','pending'],
+            'posts_per_page' => $limit,
+            'orderby'        => 'modified',
+            'order'          => 'DESC',
+            'meta_query'     => $meta_query,
+        ];
+
+        $q = new WP_Query($query_args);
+        $tasks = [];
+
+        if($q->have_posts()){
+            while($q->have_posts()){ $q->the_post();
+                $id = get_the_ID();
+                $url = (string)get_post_meta($id,'site_url',true);
+                if(!$url){
+                    continue;
+                }
+                $tasks[] = [
+                    'id' => $id,
+                    'client_name' => (string)get_post_meta($id,'client_name',true),
+                    'site_url' => $url,
+                ];
+                update_post_meta($id,'expiry_ts_checked_at', $now);
+            }
+        }
+        wp_reset_postdata();
+
+        return $tasks;
+    }
+
     public function register_rest() {
         register_rest_route('ssl/v1','/tasks',['methods'=>'GET','permission_callback'=>'__return_true','callback'=>[$this,'rest_tasks']]);
         register_rest_route('ssl/v1','/report',['methods'=>'POST','permission_callback'=>'__return_true','callback'=>[$this,'rest_report']]);
