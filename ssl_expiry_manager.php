@@ -18,6 +18,9 @@ class SSL_Expiry_Manager_AIO {
     const RESTORE_ACTION= 'ssl_expiry_restore';
     const OPTION_TOKEN  = 'ssl_em_api_token';
     const OPTION_REMOTE = 'ssl_em_remote_client';
+    const OPTION_QUEUE  = 'ssl_em_task_queue';
+    const OPTION_LOG    = 'ssl_em_activity_log';
+    const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
     const PAGE_MAIN_FALLBACK  = 'https://kbtest.macomp.co.il/?p=9427';
@@ -58,6 +61,8 @@ class SSL_Expiry_Manager_AIO {
         add_filter('empty_trash_days', function(){ return 90; });
         add_action('init', function(){ if(!function_exists('wp_handle_upload')) require_once(ABSPATH.'wp-admin/includes/file.php'); });
         add_action('init', [$this,'ensure_token_store']);
+        add_action('init', [$this,'ensure_queue_store']);
+        add_action('init', [$this,'ensure_log_store']);
 
         add_action('rest_api_init', [$this,'register_rest']);
         add_action('admin_menu',    [$this,'settings_page']);
@@ -377,6 +382,228 @@ JS;
     private function badge_class($d){ if($d===null) return ''; if($d>90) return 'ssl-green'; if($d>30) return 'ssl-yellow'; return 'ssl-red'; }
     private function fmt_date($ts){ return $ts ? date_i18n('Y-m-d', $ts) : ''; }
     private function url_btn($u){ if(!$u) return ''; $u=esc_url($u); return "<a class='ssl-btn ssl-btn-outline' target='_blank' rel='noopener' href='{$u}'>פתיחת אתר</a>"; }
+    private function get_activity_log(){
+        $log = get_option(self::OPTION_LOG, []);
+        if(!is_array($log)){
+            $log = [];
+        }
+        return $log;
+    }
+    private function sanitize_log_context($context){
+        $clean = [];
+        foreach((array)$context as $key => $value){
+            $clean_key = is_string($key) ? sanitize_key($key) : $key;
+            if(is_scalar($value) || $value === null){
+                $clean[$clean_key] = is_string($value) ? wp_strip_all_tags((string)$value) : $value;
+            } elseif(is_array($value)){
+                $clean[$clean_key] = $this->sanitize_log_context($value);
+            }
+        }
+        return $clean;
+    }
+    private function log_activity($message, array $context = [], $level = 'info'){
+        $level = in_array($level, ['info','warning','error'], true) ? $level : 'info';
+        $entry = [
+            'time'    => time(),
+            'level'   => $level,
+            'message' => wp_strip_all_tags((string)$message),
+            'context' => $this->sanitize_log_context($context),
+        ];
+        $log = $this->get_activity_log();
+        $log[] = $entry;
+        if(count($log) > 200){
+            $log = array_slice($log, -200);
+        }
+        update_option(self::OPTION_LOG, $log, false);
+    }
+    private function normalize_queue_items($items){
+        $normalized = [];
+        $changed = false;
+        foreach((array)$items as $item){
+            if(!is_array($item)){
+                $changed = true;
+                continue;
+            }
+            $id  = isset($item['id']) ? (int)$item['id'] : 0;
+            $url = isset($item['site_url']) ? (string)$item['site_url'] : '';
+            if($id <= 0 || $url === ''){
+                $changed = true;
+                continue;
+            }
+            $request_id = isset($item['request_id']) ? preg_replace('/[^a-zA-Z0-9_-]/', '', (string)$item['request_id']) : '';
+            if($request_id === ''){
+                $request_id = 'job'.wp_generate_password(10, false, false);
+                $changed = true;
+            }
+            $status = isset($item['status']) && in_array($item['status'], ['queued','claimed'], true) ? $item['status'] : 'queued';
+            if(!isset($item['status']) || $item['status'] !== $status){
+                $changed = true;
+            }
+            $normalized[] = [
+                'id'          => $id,
+                'site_url'    => esc_url_raw($url),
+                'client_name' => isset($item['client_name']) ? wp_strip_all_tags((string)$item['client_name']) : '',
+                'context'     => isset($item['context']) && $item['context'] !== '' ? sanitize_key($item['context']) : 'manual',
+                'agent_only'  => !empty($item['agent_only']) ? 1 : 0,
+                'enqueued_at' => isset($item['enqueued_at']) ? (int)$item['enqueued_at'] : time(),
+                'request_id'  => $request_id,
+                'status'      => $status,
+                'claimed_at'  => isset($item['claimed_at']) ? (int)$item['claimed_at'] : 0,
+                'attempts'    => isset($item['attempts']) ? (int)$item['attempts'] : 0,
+            ];
+        }
+        return [$normalized, $changed];
+    }
+    private function get_task_queue(){
+        $queue = get_option(self::OPTION_QUEUE, []);
+        if(!is_array($queue)){
+            $queue = [];
+        }
+        [$normalized, $changed] = $this->normalize_queue_items($queue);
+        if($changed){
+            update_option(self::OPTION_QUEUE, $normalized, false);
+        }
+        return $normalized;
+    }
+    private function save_task_queue($queue){
+        [$normalized, ] = $this->normalize_queue_items($queue);
+        update_option(self::OPTION_QUEUE, $normalized, false);
+    }
+    private function release_stale_claims(&$queue){
+        $changed = false;
+        $now = time();
+        foreach($queue as &$item){
+            if($item['status'] === 'claimed' && (!empty($item['claimed_at']))){
+                if(($now - (int)$item['claimed_at']) > self::QUEUE_CLAIM_TTL){
+                    $item['status'] = 'queued';
+                    $item['claimed_at'] = 0;
+                    $changed = true;
+                }
+            }
+        }
+        unset($item);
+        return $changed;
+    }
+    private function enqueue_task($post_id, $context = 'manual'){
+        $post_id = (int)$post_id;
+        if($post_id <= 0){
+            return false;
+        }
+        $url = (string)get_post_meta($post_id, 'site_url', true);
+        if(!$url){
+            return false;
+        }
+        $queue = $this->get_task_queue();
+        foreach($queue as $index => $item){
+            if((int)$item['id'] === $post_id){
+                unset($queue[$index]);
+            }
+        }
+        $queue[] = [
+            'id'          => $post_id,
+            'site_url'    => esc_url_raw($url),
+            'client_name' => (string)get_post_meta($post_id, 'client_name', true),
+            'context'     => $context,
+            'agent_only'  => (int)get_post_meta($post_id, 'agent_only', true) ? 1 : 0,
+            'enqueued_at' => time(),
+            'request_id'  => 'job'.wp_generate_password(10, false, false),
+            'status'      => 'queued',
+            'claimed_at'  => 0,
+            'attempts'    => 0,
+        ];
+        $queue = array_values($queue);
+        $this->save_task_queue($queue);
+        update_post_meta($post_id,'expiry_ts_checked_at', time());
+        $this->log_activity('המשימה נוספה לתור', ['id' => $post_id, 'context' => $context, 'url' => $url]);
+        return true;
+    }
+    private function claim_queue_tasks($limit, $agent_filter = null){
+        $limit = min(100, max(1, (int)$limit));
+        $queue = $this->get_task_queue();
+        $changed = $this->release_stale_claims($queue);
+        $claimed = [];
+        $now = time();
+        foreach($queue as &$item){
+            if($item['status'] !== 'queued'){
+                continue;
+            }
+            if($agent_filter === true && empty($item['agent_only'])){
+                continue;
+            }
+            if($agent_filter === false && !empty($item['agent_only'])){
+                continue;
+            }
+            $item['status'] = 'claimed';
+            $item['claimed_at'] = $now;
+            $item['attempts'] = isset($item['attempts']) ? (int)$item['attempts'] + 1 : 1;
+            $claimed[] = $item;
+            $changed = true;
+            if(count($claimed) >= $limit){
+                break;
+            }
+        }
+        unset($item);
+        if($changed){
+            $this->save_task_queue($queue);
+        }
+        if(!empty($claimed)){
+            $this->log_activity('משימות נמסרו לסוכן', ['count' => count($claimed)]);
+        }
+        $callback = rest_url('ssl-agent/v1/report');
+        foreach($claimed as &$job){
+            $job['callback'] = $callback;
+        }
+        unset($job);
+        return $claimed;
+    }
+    private function peek_queue_tasks($limit, $agent_filter = null){
+        $limit = min(100, max(1, (int)$limit));
+        $queue = $this->get_task_queue();
+        $changed = $this->release_stale_claims($queue);
+        if($changed){
+            $this->save_task_queue($queue);
+        }
+        $tasks = [];
+        foreach($queue as $item){
+            if($item['status'] !== 'queued'){
+                continue;
+            }
+            if($agent_filter === true && empty($item['agent_only'])){
+                continue;
+            }
+            if($agent_filter === false && !empty($item['agent_only'])){
+                continue;
+            }
+            $tasks[] = $item + ['callback' => rest_url('ssl-agent/v1/report')];
+            if(count($tasks) >= $limit){
+                break;
+            }
+        }
+        return $tasks;
+    }
+    private function complete_queue_task($post_id, $request_id, $success = true, $message = ''){
+        $post_id = (int)$post_id;
+        $request_id = (string)$request_id;
+        $queue = $this->get_task_queue();
+        $removed = false;
+        foreach($queue as $index => $item){
+            if((int)$item['id'] === $post_id){
+                if($request_id && $item['request_id'] !== $request_id){
+                    continue;
+                }
+                unset($queue[$index]);
+                $removed = true;
+            }
+        }
+        if($removed){
+            $this->save_task_queue(array_values($queue));
+            $this->log_activity($success ? 'משימה הושלמה' : 'משימה נכשלה', [
+                'id' => $post_id,
+                'request_id' => $request_id,
+                'message' => $message,
+            ], $success ? 'info' : 'error');
+        }
+    }
     public function ensure_token_store(){
         $tokens = get_option(self::OPTION_TOKEN, null);
         if($tokens === null){
@@ -401,6 +628,28 @@ JS;
             if($normalized !== $tokens){
                 update_option(self::OPTION_TOKEN, $normalized);
             }
+        }
+    }
+
+    public function ensure_queue_store(){
+        $queue = get_option(self::OPTION_QUEUE, null);
+        if($queue === null){
+            add_option(self::OPTION_QUEUE, [], false);
+            return;
+        }
+        if(!is_array($queue)){
+            update_option(self::OPTION_QUEUE, [], false);
+        }
+    }
+
+    public function ensure_log_store(){
+        $log = get_option(self::OPTION_LOG, null);
+        if($log === null){
+            add_option(self::OPTION_LOG, [], false);
+            return;
+        }
+        if(!is_array($log)){
+            update_option(self::OPTION_LOG, [], false);
         }
     }
     private function normalize_tokens($tokens){
@@ -633,19 +882,13 @@ JS;
         }
         $defaults = [
             'enabled' => 0,
-            'endpoint' => '',
-            'auth_token' => '',
-            'verify' => 1,
-            'timeout' => 20,
-            'retries' => 1,
+            'local_fallback' => 1,
         ];
         $settings = wp_parse_args($saved, $defaults);
-        $settings['endpoint'] = trim((string)$settings['endpoint']);
-        $settings['auth_token'] = trim((string)$settings['auth_token']);
-        $settings['enabled'] = (int)!empty($settings['enabled']);
-        $settings['verify'] = (int)!empty($settings['verify']);
-        $settings['timeout'] = max(5, min(120, (int)$settings['timeout']));
-        $settings['retries'] = max(0, min(5, (int)$settings['retries']));
+        $settings = [
+            'enabled' => (int)!empty($settings['enabled']),
+            'local_fallback' => (int)!empty($settings['local_fallback']),
+        ];
         return $settings;
     }
 
@@ -656,10 +899,8 @@ JS;
         if(empty($settings['enabled'])){
             return false;
         }
-        if(empty($settings['endpoint']) || stripos($settings['endpoint'], 'http') !== 0){
-            return false;
-        }
-        if(empty($settings['auth_token'])){
+        $primary = $this->get_primary_token();
+        if(!$primary || empty($primary['token'])){
             return false;
         }
         return true;
@@ -672,63 +913,14 @@ JS;
         if(!$this->remote_client_is_ready($settings)){
             return false;
         }
-        $primary = $this->get_primary_token();
-        if(!$primary || empty($primary['token'])){
-            return false;
-        }
-        $token_value = (string)$primary['token'];
-        $endpoint = trailingslashit($settings['endpoint']).'api/check';
-        $payload = [
-            'request_id' => 'wp'.wp_generate_password(12, false, false),
-            'id' => (int)$post_id,
-            'site_url' => (string)$url,
-            'callback' => rest_url('ssl/v1/report'),
-            'token' => $token_value,
-            'context' => $context,
-            'report_timeout' => (int)$settings['timeout'],
-        ];
-        $args = [
-            'headers' => [
-                'Authorization' => 'Bearer '.$settings['auth_token'],
-                'Content-Type'  => 'application/json',
-                'Accept'        => 'application/json',
-            ],
-            'body' => wp_json_encode($payload),
-            'timeout' => (int)$settings['timeout'],
-            'sslverify' => !empty($settings['verify']),
-        ];
-        $attempts = max(1, 1 + (int)$settings['retries']);
-        $last_message = '';
-        for($i=0;$i<$attempts;$i++){
-            $response = wp_remote_post($endpoint, $args);
-            if(is_wp_error($response)){
-                $last_message = 'Remote dispatch failed: '.$response->get_error_message();
-            } else {
-                $code = (int)wp_remote_retrieve_response_code($response);
-                if($code >= 200 && $code < 300){
-                    update_post_meta($post_id, 'expiry_ts_checked_at', time());
-                    delete_post_meta($post_id, 'last_error');
-                    $this->mark_token_online($primary['id']);
-                    return true;
-                }
-                $body = wp_remote_retrieve_body($response);
-                $last_message = 'Remote dispatch HTTP '.$code;
-                if($body){
-                    $last_message .= ': '.wp_strip_all_tags($body);
-                }
-            }
-            if($i < $attempts - 1){
-                usleep(200000);
+        $success = $this->enqueue_task($post_id, $context);
+        if($success){
+            $primary = $this->get_primary_token();
+            if($primary){
+                $this->mark_token_online($primary['id']);
             }
         }
-        if($last_message){
-            update_post_meta($post_id, 'last_error', $last_message);
-        }
-        $token_state = $this->mark_token_offline($primary['id'], $last_message ?: 'שגיאת תקשורת לא ידועה');
-        if($token_state){
-            $this->maybe_notify_token_down($token_state, $last_message ?: 'שגיאת תקשורת לא ידועה');
-        }
-        return false;
+        return $success;
     }
 
     public function shortcode_table($atts = []) {
@@ -1199,18 +1391,10 @@ JS;
         }
         check_admin_referer('ssl_remote_client');
         $enabled = !empty($_POST['remote_enabled']) ? 1 : 0;
-        $endpoint = esc_url_raw(trim($_POST['remote_endpoint'] ?? ''));
-        $auth_token = sanitize_text_field($_POST['remote_auth_token'] ?? '');
-        $verify = !empty($_POST['remote_verify']) ? 1 : 0;
-        $timeout = max(5, min(120, intval($_POST['remote_timeout'] ?? 20)));
-        $retries = max(0, min(5, intval($_POST['remote_retries'] ?? 1)));
+        $local_fallback = !empty($_POST['remote_local_fallback']) ? 1 : 0;
         $settings = [
             'enabled' => $enabled,
-            'endpoint' => $endpoint,
-            'auth_token' => $auth_token,
-            'verify' => $verify,
-            'timeout' => $timeout,
-            'retries' => $retries,
+            'local_fallback' => $local_fallback,
         ];
         update_option(self::OPTION_REMOTE, $settings);
         $redirect = add_query_arg([
@@ -1264,7 +1448,15 @@ JS;
                 update_post_meta($post_id,'images',$ids);
             }
             if($site){
-                $this->dispatch_remote_check($post_id, $site, 'manual-save');
+                $settings = $this->get_remote_client_settings();
+                if(!$this->dispatch_remote_check($post_id, $site, 'manual-save', $settings) && !empty($settings['local_fallback'])){
+                    $exp_ts = $this->fetch_ssl_expiry_ts($site);
+                    if($exp_ts){
+                        update_post_meta($post_id,'expiry_ts',$exp_ts);
+                        update_post_meta($post_id,'source','auto');
+                        delete_post_meta($post_id,'last_error');
+                    }
+                }
             }
         }
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
@@ -1321,7 +1513,7 @@ JS;
         $settings = $this->get_remote_client_settings();
         $remote_ready = $this->remote_client_is_ready($settings);
         $meta_query = [];
-        if(!$remote_ready){
+        if(!$remote_ready && !empty($settings['local_fallback'])){
             $meta_query[] = ['key'=>'agent_only','compare'=>'!=','value'=>1];
         }
         $args = [
@@ -1341,11 +1533,13 @@ JS;
                 if($remote_ready && $this->dispatch_remote_check($id,$url,'cron',$settings)){
                     continue;
                 }
-                $exp_ts=$this->fetch_ssl_expiry_ts($url);
-                if($exp_ts){
-                    update_post_meta($id,'expiry_ts',$exp_ts);
-                    update_post_meta($id,'source','auto');
-                    delete_post_meta($id,'last_error');
+                if(!empty($settings['local_fallback'])){
+                    $exp_ts=$this->fetch_ssl_expiry_ts($url);
+                    if($exp_ts){
+                        update_post_meta($id,'expiry_ts',$exp_ts);
+                        update_post_meta($id,'source','auto');
+                        delete_post_meta($id,'last_error');
+                    }
                 }
             }
             wp_reset_postdata();
@@ -1458,16 +1652,25 @@ JS;
             'permission_callback' => '__return_true',
             'callback' => [$this,'rest_agent_poll'],
         ]);
+        register_rest_route('ssl-agent/v1','/report',[
+            'methods'  => ['POST'],
+            'permission_callback' => '__return_true',
+            'callback' => [$this,'rest_report'],
+        ]);
     }
     private function rest_auth($req){
-        $token=$req->get_header('x-ssl-token') ?: '';
+        $token=$req->get_header('x-agent-token') ?: '';
         if(!$token){
             return new WP_Error('forbidden','invalid token',['status'=>403]);
         }
         $tokens=$this->ensure_default_token();
         foreach($tokens as $stored){
             if(!empty($stored['token']) && hash_equals($stored['token'], $token)){
+                $previous_status = isset($stored['last_status']) ? (string)$stored['last_status'] : 'unknown';
                 $updated = $this->mark_token_online($stored['id']);
+                if($previous_status !== 'online'){
+                    $this->log_activity('סוכן אומת בהצלחה', ['token' => $stored['name'] ?? $stored['id']]);
+                }
                 return ['token' => $updated ?: $stored];
             }
         }
@@ -1476,9 +1679,36 @@ JS;
     public function rest_tasks(WP_REST_Request $req){
         $auth=$this->rest_auth($req); if(is_wp_error($auth)) return $auth;
         $limit=min(100,max(1,intval($req->get_param('limit') ?: 50)));
+        $agent_param=$req->get_param('agent_only');
+        if($agent_param===null){
+            $agent_filter=null;
+        } else {
+            $agent_filter = intval($agent_param) === 1 ? true : (intval($agent_param) === 0 ? false : null);
+        }
+        $items=$this->peek_queue_tasks($limit,$agent_filter);
+        return new WP_REST_Response(['tasks'=>$items,'count'=>count($items),'pending'=>count($this->get_task_queue())],200);
+    }
+
+    public function rest_agent_poll(WP_REST_Request $req){
+        $auth=$this->rest_auth($req); if(is_wp_error($auth)) return $auth;
+        $limit=min(100,max(1,intval($req->get_param('limit') ?: 50)));
         $force=intval($req->get_param('force') ?: 0)===1;
-        $items=$this->collect_rest_tasks($limit,$force,null);
-        return new WP_REST_Response(['tasks'=>$items,'count'=>count($items)],200);
+        $agent_param=$req->get_param('agent_only');
+        if($agent_param===null){
+            $agent_filter=true;
+        } else {
+            $agent_filter = intval($agent_param) === 1 ? true : (intval($agent_param) === 0 ? false : null);
+        }
+        $items=$this->claim_queue_tasks($limit,$agent_filter);
+        if($force){
+            $this->log_activity('סוכן דרש משימות בכפייה', ['limit' => $limit]);
+        }
+        $queue = $this->get_task_queue();
+        return new WP_REST_Response([
+            'tasks'=>$items,
+            'count'=>count($items),
+            'pending'=>count($queue),
+        ],200);
     }
 
     public function rest_agent_poll(WP_REST_Request $req){
@@ -1514,9 +1744,16 @@ JS;
         $rows=is_array($data['results']??null)?$data['results']:[];
         foreach($rows as $row){
             $id=intval($row['id']??0); if(!$id) continue;
+            $request_id = isset($row['request_id']) ? sanitize_text_field($row['request_id']) : '';
+            $error_message = '';
             if(!empty($row['expiry_ts'])){ update_post_meta($id,'expiry_ts',intval($row['expiry_ts'])); update_post_meta($id,'source','auto'); delete_post_meta($id,'last_error'); }
-            if(!empty($row['error'])){ update_post_meta($id,'last_error',sanitize_text_field($row['error'])); }
+            if(!empty($row['error'])){ $error_message = sanitize_text_field($row['error']); update_post_meta($id,'last_error',$error_message); }
             update_post_meta($id,'expiry_ts_checked_at', time());
+            if($error_message){
+                $this->complete_queue_task($id,$request_id,false,$error_message);
+            } else {
+                $this->complete_queue_task($id,$request_id,true,'');
+            }
         }
         return new WP_REST_Response(['ok'=>true,'updated'=>count($rows)],200);
     }
@@ -1540,33 +1777,88 @@ JS;
                 echo '<tr><td>'.esc_html($token['name']).'</td><td><code>'.esc_html($token['token']).'</code></td><td>'.esc_html($updated).'</td></tr>';
             }
             echo '</tbody></table>';
-            echo '<p>כל קריאת REST חייבת לכלול Header בשם <code>X-SSL-Token</code>.</p>';
+            $poll_url = rest_url('ssl-agent/v1/poll');
+            $report_url = rest_url('ssl-agent/v1/report');
+            echo '<p>כל קריאת REST חייבת לכלול Header בשם <code>X-Agent-Token</code>. נקודות הקצה הזמינות:</p>';
+            echo '<ul style="list-style:disc;padding-right:20px;">';
+            echo '<li><code>'.esc_html($poll_url).'</code> &mdash; משיכת משימות לסוכן.</li>';
+            echo '<li><code>'.esc_html($report_url).'</code> &mdash; שליחת דוחות ביצוע.</li>';
+            echo '</ul>';
             echo '<hr />';
-            echo '<h2>הגדרות קליינט מרוחק</h2>';
+            echo '<h2>הגדרות סוכן מרוחק</h2>';
             if($remote_ready){
-                echo '<p><span style="color:#0a7a0a;font-weight:600;">הקליינט המרוחק פעיל.</span> כל בקשת בדיקה תשלח לכתובת המוגדרת להלן.</p>';
+                echo '<p><span style="color:#0a7a0a;font-weight:600;">הסוכן המרוחק פעיל.</span> משימות חדשות ייכנסו לתור ויאספו באמצעות השירות במשרד.</p>';
             } else {
-                echo '<p><span style="color:#b91c1c;font-weight:600;">הקליינט המרוחק כבוי או לא הוגדר במלואו.</span> ברירת המחדל תהיה בדיקה ישירה מהשרת.</p>';
+                echo '<p><span style="color:#b91c1c;font-weight:600;">הסוכן המרוחק כבוי או לא זמין.</span> בהתאם להגדרות תתבצע בדיקה מקומית.</p>';
             }
             echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" class="ssl-remote-form">';
             wp_nonce_field('ssl_remote_client');
             echo '<input type="hidden" name="action" value="ssl_save_remote_client" />';
             echo '<table class="form-table" role="presentation"><tbody>';
-            echo '<tr><th scope="row">הפעלת הקליינט</th><td><label><input type="checkbox" name="remote_enabled" value="1" '.checked(!empty($remote['enabled']),true,false).' /> הפעל העברה לשרת המרוחק</label></td></tr>';
-            echo '<tr><th scope="row">כתובת שירות מרוחק</th><td><input type="text" class="regular-text" name="remote_endpoint" value="'.esc_attr($remote['endpoint']).'" placeholder="https://office-host:8443/" />';
-            echo '<p class="description">השתמש בכתובת HTTPS של השירות שיוקם (למשל <code>https://192.168.1.50:8443/</code>).</p></td></tr>';
-            echo '<tr><th scope="row">טוקן גישה לשירות</th><td><input type="text" class="regular-text" name="remote_auth_token" value="'.esc_attr($remote['auth_token']).'" />';
-            echo '<p class="description">יש להזין את ה-Token שהוגדר בעת התקנת הסרוויס המרוחק באמצעות הסקריפט <code>remote_client_installer.py</code>.</p></td></tr>';
-            echo '<tr><th scope="row">Timeout (שניות)</th><td><input type="number" min="5" max="120" name="remote_timeout" value="'.esc_attr($remote['timeout']).'" />';
-            echo '<p class="description">זמן מקסימלי להמתנה לתשובת הסרוויס לפני מעבר לניסיון נוסף או לבדיקה מקומית.</p></td></tr>';
-            echo '<tr><th scope="row">ניסיונות חוזרים</th><td><input type="number" min="0" max="5" name="remote_retries" value="'.esc_attr($remote['retries']).'" />';
-            echo '<p class="description">כמות הניסיונות הנוספים לשליחת הבקשה (מעבר לניסיון הראשוני).</p></td></tr>';
-            echo '<tr><th scope="row">בדיקת תוקף תעודה</th><td><label><input type="checkbox" name="remote_verify" value="1" '.checked(!empty($remote['verify']),true,false).' /> אמת את תעודת ה-SSL של השירות המרוחק</label>';
-            echo '<p class="description">בטל אפשרות זו רק אם משתמשים בתעודה עצמית ואינך יכול להוסיף אותה לאמון השרת.</p></td></tr>';
+            echo '<tr><th scope="row">הפעלת הסוכן</th><td><label><input type="checkbox" name="remote_enabled" value="1" '.checked(!empty($remote['enabled']),true,false).' /> אפשר לסוכן למשוך משימות מהתור</label></td></tr>';
+            echo '<tr><th scope="row">Fallback מקומי</th><td><label><input type="checkbox" name="remote_local_fallback" value="1" '.checked(!empty($remote['local_fallback']),true,false).' /> בצע בדיקות ישירות כאשר הסוכן אינו פעיל</label></td></tr>';
+            echo '<tr><th scope="row">REST Poll</th><td><code>'.esc_html($poll_url).'</code><p class="description">השתמש בקישור זה להגדרת שירות ה-Agent (GET/POST).</p></td></tr>';
+            echo '<tr><th scope="row">REST Report</th><td><code>'.esc_html($report_url).'</code><p class="description">הסוכן שולח לכאן תוצאות באמצעות POST.</p></td></tr>';
+            $primary_token_value = $this->get_primary_token_value();
+            if($primary_token_value){
+                echo '<tr><th scope="row">Token לאימות</th><td><code>'.esc_html($primary_token_value).'</code><p class="description">העבר ערך זה בכותרת <code>X-Agent-Token</code> בכל קריאה מהסוכן.</p></td></tr>';
+            }
             echo '</tbody></table>';
             echo '<p class="submit"><button type="submit" class="button button-primary">שמירת הגדרות</button></p>';
             echo '</form>';
-            echo '<p class="description">לאחר ההתקנה, ניתן להריץ את הפקודה <code>python3 remote_client_installer.py --auth-token=TOKEN-מרוחק --listen-port=8443</code> על התחנה במשרד כדי להגדיר את הסרוויס ולספק כתובת לשדה לעיל.</p>';
+            echo '<p class="description">להתקנה מהירה ניתן להריץ את הפקודה <code>python3 remote_client_installer.py --wp-url='.esc_html(home_url('/')).' --agent-token=TOKEN</code> על התחנה במשרד. הסקריפט יוודא תלותים, יתקין את השירות ויתחבר לנקודות הקצה לעיל.</p>';
+
+            $queue = $this->get_task_queue();
+            echo '<hr /><h2>תור משימות</h2>';
+            if(empty($queue)){
+                echo '<p>אין משימות ממתינות בתור.</p>';
+            } else {
+                echo '<p>כמות משימות ממתינות: <strong>'.count($queue).'</strong>.</p>';
+                echo '<table class="widefat striped"><thead><tr><th>ID</th><th>לקוח</th><th>URL</th><th>הקשר</th><th>סטטוס</th><th>זמן</th></tr></thead><tbody>';
+                foreach($queue as $job){
+                    $status = $job['status'] === 'claimed' ? 'בתהליך' : 'ממתין';
+                    $time = !empty($job['claimed_at']) ? (int)$job['claimed_at'] : (int)$job['enqueued_at'];
+                    $time_label = $time ? date_i18n('Y-m-d H:i', $time) : '';
+                    echo '<tr>';
+                    echo '<td>'.esc_html($job['id']).'</td>';
+                    echo '<td>'.esc_html($job['client_name']).'</td>';
+                    echo '<td><code>'.esc_html($job['site_url']).'</code></td>';
+                    echo '<td>'.esc_html($job['context']).'</td>';
+                    echo '<td>'.esc_html($status).'</td>';
+                    echo '<td>'.esc_html($time_label).'</td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table>';
+            }
+
+            $log_entries = array_reverse($this->get_activity_log());
+            $log_limit = array_slice($log_entries, 0, 50);
+            echo '<hr /><h2>לוג פעילות</h2>';
+            if(empty($log_limit)){
+                echo '<p>לא קיימות רשומות פעילות בשלב זה.</p>';
+            } else {
+                echo '<p>מוצגות עד 50 הרשומות האחרונות (החדשה ביותר בראש).</p>';
+                echo '<table class="widefat striped"><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>';
+                foreach($log_limit as $entry){
+                    $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                    $level = strtoupper(esc_html($entry['level'] ?? 'info'));
+                    $message = esc_html($entry['message'] ?? '');
+                    $context = '';
+                    if(!empty($entry['context'])){
+                        $context_json = wp_json_encode($entry['context'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                        if($context_json){
+                            $context = '<code>'.esc_html($context_json).'</code>';
+                        }
+                    }
+                    echo '<tr>';
+                    echo '<td>'.esc_html($time).'</td>';
+                    echo '<td>'.esc_html($level).'</td>';
+                    echo '<td>'.$message.'</td>';
+                    echo '<td>'.$context.'</td>';
+                    echo '</tr>';
+                }
+                echo '</tbody></table>';
+            }
             echo '</div>';
         });
     }
