@@ -17,6 +17,7 @@ class SSL_Expiry_Manager_AIO {
     const DELETE_ACTION = 'ssl_expiry_delete';
     const RESTORE_ACTION= 'ssl_expiry_restore';
     const OPTION_TOKEN  = 'ssl_em_api_token';
+    const OPTION_REMOTE = 'ssl_em_remote_client';
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
 
@@ -46,6 +47,7 @@ class SSL_Expiry_Manager_AIO {
         add_action('admin_post_'.self::ADD_TOKEN_ACTION,            [$this,'handle_add_token']);
         add_action('admin_post_nopriv_'.self::MANAGE_TOKEN_ACTION, [$this,'handle_manage_token']);
         add_action('admin_post_'.self::MANAGE_TOKEN_ACTION,        [$this,'handle_manage_token']);
+        add_action('admin_post_ssl_save_remote_client',            [$this,'handle_save_remote_client']);
 
         add_action('wp', [$this,'ensure_cron']);
         add_action(self::CRON_HOOK, [$this,'cron_check_all']);
@@ -298,6 +300,115 @@ JS;
             }
         }
         return $fallback;
+    }
+
+    private function get_primary_token_value(){
+        $tokens = $this->ensure_default_token();
+        foreach($tokens as $token){
+            if(!empty($token['token'])){
+                return (string)$token['token'];
+            }
+        }
+        return '';
+    }
+
+    private function get_remote_client_settings(){
+        $saved = get_option(self::OPTION_REMOTE, []);
+        if(!is_array($saved)){
+            $saved = [];
+        }
+        $defaults = [
+            'enabled' => 0,
+            'endpoint' => '',
+            'auth_token' => '',
+            'verify' => 1,
+            'timeout' => 20,
+            'retries' => 1,
+        ];
+        $settings = wp_parse_args($saved, $defaults);
+        $settings['endpoint'] = trim((string)$settings['endpoint']);
+        $settings['auth_token'] = trim((string)$settings['auth_token']);
+        $settings['enabled'] = (int)!empty($settings['enabled']);
+        $settings['verify'] = (int)!empty($settings['verify']);
+        $settings['timeout'] = max(5, min(120, (int)$settings['timeout']));
+        $settings['retries'] = max(0, min(5, (int)$settings['retries']));
+        return $settings;
+    }
+
+    private function remote_client_is_ready($settings = null){
+        if($settings === null){
+            $settings = $this->get_remote_client_settings();
+        }
+        if(empty($settings['enabled'])){
+            return false;
+        }
+        if(empty($settings['endpoint']) || stripos($settings['endpoint'], 'http') !== 0){
+            return false;
+        }
+        if(empty($settings['auth_token'])){
+            return false;
+        }
+        return true;
+    }
+
+    private function dispatch_remote_check($post_id, $url, $context = 'manual', $settings = null){
+        if($settings === null){
+            $settings = $this->get_remote_client_settings();
+        }
+        if(!$this->remote_client_is_ready($settings)){
+            return false;
+        }
+        $token = $this->get_primary_token_value();
+        if(!$token){
+            return false;
+        }
+        $endpoint = trailingslashit($settings['endpoint']).'api/check';
+        $payload = [
+            'request_id' => 'wp'.wp_generate_password(12, false, false),
+            'id' => (int)$post_id,
+            'site_url' => (string)$url,
+            'callback' => rest_url('ssl/v1/report'),
+            'token' => $token,
+            'context' => $context,
+            'report_timeout' => (int)$settings['timeout'],
+        ];
+        $args = [
+            'headers' => [
+                'Authorization' => 'Bearer '.$settings['auth_token'],
+                'Content-Type'  => 'application/json',
+                'Accept'        => 'application/json',
+            ],
+            'body' => wp_json_encode($payload),
+            'timeout' => (int)$settings['timeout'],
+            'sslverify' => !empty($settings['verify']),
+        ];
+        $attempts = max(1, 1 + (int)$settings['retries']);
+        $last_message = '';
+        for($i=0;$i<$attempts;$i++){
+            $response = wp_remote_post($endpoint, $args);
+            if(is_wp_error($response)){
+                $last_message = 'Remote dispatch failed: '.$response->get_error_message();
+            } else {
+                $code = (int)wp_remote_retrieve_response_code($response);
+                if($code >= 200 && $code < 300){
+                    update_post_meta($post_id, 'expiry_ts_checked_at', time());
+                    delete_post_meta($post_id, 'last_error');
+                    return true;
+                }
+                $body = wp_remote_retrieve_body($response);
+                $last_message = 'Remote dispatch HTTP '.$code;
+                if($body){
+                    $last_message .= ': '.wp_strip_all_tags($body);
+                }
+            }
+            if($i < $attempts - 1){
+                usleep(200000);
+            }
+        }
+        if($last_message){
+            update_post_meta($post_id, 'last_error', $last_message);
+        }
+        return false;
     }
 
     public function shortcode_table($atts = []) {
@@ -645,6 +756,34 @@ JS;
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
     }
 
+    public function handle_save_remote_client(){
+        if(!current_user_can('manage_options')){
+            wp_die('אין לך הרשאה לעדכן הגדרות אלו');
+        }
+        check_admin_referer('ssl_remote_client');
+        $enabled = !empty($_POST['remote_enabled']) ? 1 : 0;
+        $endpoint = esc_url_raw(trim($_POST['remote_endpoint'] ?? ''));
+        $auth_token = sanitize_text_field($_POST['remote_auth_token'] ?? '');
+        $verify = !empty($_POST['remote_verify']) ? 1 : 0;
+        $timeout = max(5, min(120, intval($_POST['remote_timeout'] ?? 20)));
+        $retries = max(0, min(5, intval($_POST['remote_retries'] ?? 1)));
+        $settings = [
+            'enabled' => $enabled,
+            'endpoint' => $endpoint,
+            'auth_token' => $auth_token,
+            'verify' => $verify,
+            'timeout' => $timeout,
+            'retries' => $retries,
+        ];
+        update_option(self::OPTION_REMOTE, $settings);
+        $redirect = add_query_arg([
+            'page' => 'ssl-expiry-api',
+            'remote-updated' => 1,
+        ], admin_url('options-general.php'));
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
     public function handle_save() {
         $this->check_nonce();
         $post_id=intval($_POST['post_id'] ?? 0);
@@ -686,6 +825,9 @@ JS;
                     }
                 }
                 update_post_meta($post_id,'images',$ids);
+            }
+            if($site){
+                $this->dispatch_remote_check($post_id, $site, 'manual-save');
             }
         }
         wp_safe_redirect( wp_get_referer() ?: home_url('/') ); exit;
@@ -739,12 +881,35 @@ JS;
 
     public function ensure_cron(){ if(!wp_next_scheduled(self::CRON_HOOK)) wp_schedule_event(time()+300,'daily',self::CRON_HOOK); }
     public function cron_check_all() {
-        $q=new WP_Query(['post_type'=>self::CPT,'post_status'=>['publish','draft','pending'],'posts_per_page'=>-1,'meta_query'=>[['key'=>'agent_only','compare'=>'!=','value'=>1]]]);
+        $settings = $this->get_remote_client_settings();
+        $remote_ready = $this->remote_client_is_ready($settings);
+        $meta_query = [];
+        if(!$remote_ready){
+            $meta_query[] = ['key'=>'agent_only','compare'=>'!=','value'=>1];
+        }
+        $args = [
+            'post_type'=>self::CPT,
+            'post_status'=>['publish','draft','pending'],
+            'posts_per_page'=>-1,
+        ];
+        if(!empty($meta_query)){
+            $args['meta_query'] = $meta_query;
+        }
+        $q=new WP_Query($args);
         if($q->have_posts()){
             while($q->have_posts()){ $q->the_post();
-                $id=get_the_ID(); $url=get_post_meta($id,'site_url',true); if(!$url) continue;
+                $id=get_the_ID();
+                $url=get_post_meta($id,'site_url',true);
+                if(!$url) continue;
+                if($remote_ready && $this->dispatch_remote_check($id,$url,'cron',$settings)){
+                    continue;
+                }
                 $exp_ts=$this->fetch_ssl_expiry_ts($url);
-                if($exp_ts){ update_post_meta($id,'expiry_ts',$exp_ts); update_post_meta($id,'source','auto'); delete_post_meta($id,'last_error'); }
+                if($exp_ts){
+                    update_post_meta($id,'expiry_ts',$exp_ts);
+                    update_post_meta($id,'source','auto');
+                    delete_post_meta($id,'last_error');
+                }
             }
             wp_reset_postdata();
         }
@@ -814,8 +979,16 @@ JS;
 
     public function settings_page(){
         add_options_page('SSL Expiry API','SSL Expiry API','manage_options','ssl-expiry-api',function(){
+            if(!current_user_can('manage_options')){
+                return;
+            }
             $tokens = $this->ensure_default_token();
+            $remote = $this->get_remote_client_settings();
+            $remote_ready = $this->remote_client_is_ready($remote);
             echo '<div class="wrap"><h1>SSL Expiry API</h1>';
+            if(!empty($_GET['remote-updated'])){
+                echo '<div class="notice notice-success"><p>ההגדרות נשמרו בהצלחה.</p></div>';
+            }
             echo '<p>ניהול הטוקנים מתבצע דרך הקיצור <code>[ssl_token_page]</code> בפרונט. להלן הטוקנים הפעילים:</p>';
             echo '<table class="widefat striped"><thead><tr><th>שם הטוקן</th><th>ערך</th><th>עודכן</th></tr></thead><tbody>';
             foreach($tokens as $token){
@@ -824,6 +997,32 @@ JS;
             }
             echo '</tbody></table>';
             echo '<p>כל קריאת REST חייבת לכלול Header בשם <code>X-SSL-Token</code>.</p>';
+            echo '<hr />';
+            echo '<h2>הגדרות קליינט מרוחק</h2>';
+            if($remote_ready){
+                echo '<p><span style="color:#0a7a0a;font-weight:600;">הקליינט המרוחק פעיל.</span> כל בקשת בדיקה תשלח לכתובת המוגדרת להלן.</p>';
+            } else {
+                echo '<p><span style="color:#b91c1c;font-weight:600;">הקליינט המרוחק כבוי או לא הוגדר במלואו.</span> ברירת המחדל תהיה בדיקה ישירה מהשרת.</p>';
+            }
+            echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" class="ssl-remote-form">';
+            wp_nonce_field('ssl_remote_client');
+            echo '<input type="hidden" name="action" value="ssl_save_remote_client" />';
+            echo '<table class="form-table" role="presentation"><tbody>';
+            echo '<tr><th scope="row">הפעלת הקליינט</th><td><label><input type="checkbox" name="remote_enabled" value="1" '.checked(!empty($remote['enabled']),true,false).' /> הפעל העברה לשרת המרוחק</label></td></tr>';
+            echo '<tr><th scope="row">כתובת שירות מרוחק</th><td><input type="text" class="regular-text" name="remote_endpoint" value="'.esc_attr($remote['endpoint']).'" placeholder="https://office-host:8443/" />';
+            echo '<p class="description">השתמש בכתובת HTTPS של השירות שיוקם (למשל <code>https://192.168.1.50:8443/</code>).</p></td></tr>';
+            echo '<tr><th scope="row">טוקן גישה לשירות</th><td><input type="text" class="regular-text" name="remote_auth_token" value="'.esc_attr($remote['auth_token']).'" />';
+            echo '<p class="description">יש להזין את ה-Token שהוגדר בעת התקנת הסרוויס המרוחק באמצעות הסקריפט <code>remote_client_installer.py</code>.</p></td></tr>';
+            echo '<tr><th scope="row">Timeout (שניות)</th><td><input type="number" min="5" max="120" name="remote_timeout" value="'.esc_attr($remote['timeout']).'" />';
+            echo '<p class="description">זמן מקסימלי להמתנה לתשובת הסרוויס לפני מעבר לניסיון נוסף או לבדיקה מקומית.</p></td></tr>';
+            echo '<tr><th scope="row">ניסיונות חוזרים</th><td><input type="number" min="0" max="5" name="remote_retries" value="'.esc_attr($remote['retries']).'" />';
+            echo '<p class="description">כמות הניסיונות הנוספים לשליחת הבקשה (מעבר לניסיון הראשוני).</p></td></tr>';
+            echo '<tr><th scope="row">בדיקת תוקף תעודה</th><td><label><input type="checkbox" name="remote_verify" value="1" '.checked(!empty($remote['verify']),true,false).' /> אמת את תעודת ה-SSL של השירות המרוחק</label>';
+            echo '<p class="description">בטל אפשרות זו רק אם משתמשים בתעודה עצמית ואינך יכול להוסיף אותה לאמון השרת.</p></td></tr>';
+            echo '</tbody></table>';
+            echo '<p class="submit"><button type="submit" class="button button-primary">שמירת הגדרות</button></p>';
+            echo '</form>';
+            echo '<p class="description">לאחר ההתקנה, ניתן להריץ את הפקודה <code>python3 remote_client_installer.py --auth-token=TOKEN-מרוחק --listen-port=8443</code> על התחנה במשרד כדי להגדיר את הסרוויס ולספק כתובת לשדה לעיל.</p>';
             echo '</div>';
         });
     }
