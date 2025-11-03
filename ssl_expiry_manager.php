@@ -20,6 +20,9 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_REMOTE = 'ssl_em_remote_client';
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
+    const PAGE_MAIN_FALLBACK  = 'https://kbtest.macomp.co.il/?p=9427';
+    const PAGE_TRASH_FALLBACK = 'https://kbtest.macomp.co.il/?p=9441';
+    const PAGE_TOKEN_FALLBACK = 'https://kbtest.macomp.co.il/?p=9447';
 
     public function __construct() {
         add_action('init', [$this,'register_cpt']);
@@ -171,8 +174,18 @@ class SSL_Expiry_Manager_AIO {
 .ssl-token-table__notify,.ssl-token-table__emails{vertical-align:top;}
 .ssl-token-toggle{display:flex;align-items:center;gap:8px;font-size:.85rem;color:#0f172a;font-weight:600;}
 .ssl-token-toggle input[type=checkbox]{margin:0;}
-.ssl-token-emails__select{width:100%;min-width:200px;border:1px solid #cbd5f5;border-radius:10px;padding:.45rem .6rem;background:#f8fafc;color:#0f172a;font-size:.85rem;}
-.ssl-token-emails__input{margin-top:8px;width:100%;border:1px solid #cbd5f5;border-radius:10px;padding:.45rem .6rem;background:#fff;color:#0f172a;font-size:.85rem;}
+.ssl-token-emails{display:flex;flex-direction:column;gap:8px;}
+.ssl-token-email-list{display:flex;flex-wrap:wrap;gap:8px;min-height:32px;}
+.ssl-token-email-chip{display:inline-flex;align-items:center;gap:6px;background:#e0f2fe;color:#0f172a;padding:.35rem .65rem;border-radius:999px;font-weight:600;font-size:.8rem;box-shadow:0 6px 14px rgba(14,116,144,.18);}
+.ssl-token-email-chip__text{direction:ltr;}
+.ssl-token-email-chip__remove{background:transparent;border:none;color:#1d4ed8;cursor:pointer;font-size:1rem;line-height:1;padding:0;}
+.ssl-token-email-chip__remove:hover{color:#1e3a8a;}
+.ssl-token-email-chip--empty{background:#f1f5f9;color:#64748b;box-shadow:none;font-weight:500;}
+.ssl-token-email-add{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.ssl-token-email-add input{flex:1 1 220px;border:1px solid #cbd5f5;border-radius:10px;padding:.45rem .6rem;background:#fff;color:#0f172a;font-size:.85rem;direction:ltr;}
+.ssl-token-email-add button{padding:.45rem 1.1rem;}
+.ssl-token-email-error{font-size:.75rem;color:#b91c1c;min-height:1.1em;}
+.ssl-token-email-input--error{border-color:#f87171;box-shadow:0 0 0 2px rgba(248,113,113,.25);}
  .ssl-token-note{margin-top:12px;}
 .ssl-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;}
 .ssl-table__edit-row td{background:#f8fafc;}
@@ -187,7 +200,9 @@ class SSL_Expiry_Manager_AIO {
  .ssl-token-create__fields{flex-direction:column;align-items:stretch;}
  .ssl-token-table__actions{justify-content:center;}
  .ssl-token-status{flex-direction:column;align-items:flex-start;}
- .ssl-token-emails__select{min-width:100%;}
+ .ssl-token-email-add{flex-direction:column;align-items:stretch;}
+ .ssl-token-email-add input,.ssl-token-email-add button{width:100%;flex:1 1 auto;}
+ .ssl-token-email-list{justify-content:flex-start;}
 }
 .ssl-err{color:#b00020;font-size:.85rem;}
 CSS;
@@ -195,6 +210,86 @@ CSS;
         wp_enqueue_style('ssl-expiry-manager');
         wp_add_inline_style('ssl-expiry-manager', $css);
         $js = <<<'JS'
+function sslEmailFindWrapper(el){
+  return el ? el.closest('[data-email-list]') : null;
+}
+function sslEmailShowError(wrapper,message){
+  if(!wrapper) return;
+  var error = wrapper.querySelector('[data-email-error]');
+  if(error){
+    error.textContent = message || '';
+  }
+}
+function sslEmailEnsure(wrapper){
+  if(!wrapper) return;
+  var list = wrapper.querySelector('[data-email-chips]');
+  if(!list) return;
+  var emptyNodes = list.querySelectorAll('[data-email-empty]');
+  var hasChip = list.querySelector('[data-email-item]');
+  if(hasChip){
+    emptyNodes.forEach(function(node){ node.remove(); });
+  } else if(!emptyNodes.length){
+    var empty = document.createElement('span');
+    empty.className = 'ssl-token-email-chip ssl-token-email-chip--empty';
+    empty.setAttribute('data-email-empty','');
+    empty.textContent = 'אין נמענים';
+    list.appendChild(empty);
+  }
+}
+function sslEmailHandleAdd(wrapper){
+  if(!wrapper) return;
+  var input = wrapper.querySelector('[data-email-input]');
+  if(!input) return;
+  var raw = input.value.trim();
+  sslEmailShowError(wrapper,'');
+  input.classList.remove('ssl-token-email-input--error');
+  if(!raw){
+    sslEmailShowError(wrapper,'הקלד כתובת דוא"ל');
+    input.classList.add('ssl-token-email-input--error');
+    return;
+  }
+  var email = raw.toLowerCase();
+  var pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if(!pattern.test(email)){
+    sslEmailShowError(wrapper,'כתובת לא תקינה');
+    input.classList.add('ssl-token-email-input--error');
+    return;
+  }
+  var exists = Array.prototype.slice.call(wrapper.querySelectorAll('input[type="hidden"][name="token_emails[]"]')).some(function(hidden){
+    return hidden.value.toLowerCase() === email;
+  });
+  if(exists){
+    sslEmailShowError(wrapper,'כתובת כבר קיימת');
+    input.value = '';
+    return;
+  }
+  var list = wrapper.querySelector('[data-email-chips]');
+  if(!list) return;
+  var chip = document.createElement('span');
+  chip.className = 'ssl-token-email-chip';
+  chip.setAttribute('data-email-item','');
+  var hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.name = 'token_emails[]';
+  hidden.value = email;
+  var formId = wrapper.getAttribute('data-email-form');
+  if(formId){ hidden.setAttribute('form', formId); }
+  var text = document.createElement('span');
+  text.className = 'ssl-token-email-chip__text';
+  text.textContent = raw;
+  var remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'ssl-token-email-chip__remove';
+  remove.setAttribute('data-email-remove','');
+  remove.setAttribute('aria-label','הסר כתובת');
+  remove.textContent = '×';
+  chip.appendChild(hidden);
+  chip.appendChild(text);
+  chip.appendChild(remove);
+  list.appendChild(chip);
+  input.value = '';
+  sslEmailEnsure(wrapper);
+}
 document.addEventListener('click',function(e){
   var toggle = e.target.closest('[data-ssl-toggle]');
   if(toggle){
@@ -226,6 +321,33 @@ document.addEventListener('click',function(e){
       });
     }
   }
+  var removeBtn = e.target.closest('[data-email-remove]');
+  if(removeBtn){
+    var wrapper = sslEmailFindWrapper(removeBtn);
+    if(wrapper){
+      e.preventDefault();
+      var chip = removeBtn.closest('[data-email-item]');
+      if(chip){ chip.remove(); }
+      sslEmailShowError(wrapper,'');
+      sslEmailEnsure(wrapper);
+    }
+  }
+  if(e.target.matches('[data-email-add]')){
+    var addWrapper = sslEmailFindWrapper(e.target);
+    if(addWrapper){
+      e.preventDefault();
+      sslEmailHandleAdd(addWrapper);
+    }
+  }
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter' && e.target.matches('[data-email-input]')){
+    var wrapper = sslEmailFindWrapper(e.target);
+    if(wrapper){
+      e.preventDefault();
+      sslEmailHandleAdd(wrapper);
+    }
+  }
 });
 window.addEventListener('DOMContentLoaded',function(){
   var createForm=document.querySelector('[data-ssl-create]');
@@ -237,6 +359,9 @@ window.addEventListener('DOMContentLoaded',function(){
       var id=row.getAttribute('data-ssl-form');
       document.querySelectorAll('[data-ssl-edit="'+id+'"]').forEach(function(btn){btn.classList.add('is-active');});
     }
+  });
+  document.querySelectorAll('[data-email-list]').forEach(function(wrapper){
+    sslEmailEnsure(wrapper);
   });
 });
 JS;
@@ -361,6 +486,32 @@ JS;
             }
         }
         return $fallback;
+    }
+
+    private function resolve_main_page_url(){
+        foreach(['ssl-cert-table','ssl-manager','ssl-table'] as $slug){
+            $candidate = $this->get_page_url($slug, '');
+            if($candidate){
+                return $candidate;
+            }
+        }
+        return self::PAGE_MAIN_FALLBACK;
+    }
+
+    private function resolve_token_page_url(){
+        $page = $this->get_page_url('ssl-token-page', '');
+        if($page){
+            return $page;
+        }
+        $legacy = $this->get_page_url('ssl-token', '');
+        if($legacy){
+            return $legacy;
+        }
+        return self::PAGE_TOKEN_FALLBACK;
+    }
+
+    private function resolve_trash_page_url(){
+        return $this->get_page_url('ssl-trash', self::PAGE_TRASH_FALLBACK);
     }
 
     private function get_primary_token_value(){
@@ -581,11 +732,8 @@ JS;
     }
 
     public function shortcode_table($atts = []) {
-        $default_trash = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
-        $default_token = $this->get_page_url('ssl-token-page', '');
-        if(!$default_token){
-            $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
-        }
+        $default_trash = $this->resolve_trash_page_url();
+        $default_token = $this->resolve_token_page_url();
         $a = shortcode_atts([
             'trash_url' => $default_trash,
             'token_url' => $default_token,
@@ -708,7 +856,8 @@ JS;
         return ob_get_clean();
     }
     public function shortcode_trash($atts = []) {
-        $a = shortcode_atts(['main_url' => site_url('/')], $atts);
+        $main_default = $this->resolve_main_page_url();
+        $a = shortcode_atts(['main_url' => $main_default], $atts);
         $q = new WP_Query(['post_type'=> self::CPT,'post_status'=> 'trash','posts_per_page'=> -1,'orderby'=>'modified','order'=>'DESC']);
         ob_start();
         echo "<div class='ssl-manager'>";
@@ -739,13 +888,11 @@ JS;
     }
 
     public function shortcode_controls($atts = []) {
-        $default_token = $this->get_page_url('ssl-token-page', '');
-        if(!$default_token){
-            $default_token = $this->get_page_url('ssl-token', site_url('/?page=ssl-token'));
-        }
-        $default_trash = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
+        $main_default = $this->resolve_main_page_url();
+        $default_token = $this->resolve_token_page_url();
+        $default_trash = $this->resolve_trash_page_url();
         $a = shortcode_atts([
-            'main_url'=>site_url('/'),
+            'main_url'=>$main_default,
             'trash_url'=>$default_trash,
             'token_url'=>$default_token,
         ], $atts);
@@ -794,18 +941,8 @@ JS;
         return ob_get_clean();
     }
     public function shortcode_token_page($atts = []) {
-        $main_default = '';
-        foreach(['ssl-cert-table','ssl-manager','ssl-table'] as $slug){
-            $candidate = $this->get_page_url($slug, '');
-            if($candidate){
-                $main_default = $candidate;
-                break;
-            }
-        }
-        if(!$main_default){
-            $main_default = site_url('/');
-        }
-        $trash_default = $this->get_page_url('ssl-trash', site_url('/?page=ssl-trash'));
+        $main_default = $this->resolve_main_page_url();
+        $trash_default = $this->resolve_trash_page_url();
         $a = shortcode_atts([
             'main_url'  => $main_default,
             'trash_url' => $trash_default,
@@ -897,13 +1034,34 @@ JS;
                 $checked = !empty($token['notify_down']) ? " checked" : '';
                 echo "<td class='ssl-token-table__notify'><label class='ssl-token-toggle'><input form='".esc_attr($form_id)."' type='checkbox' name='notify_down' value='1'{$checked}><span>שליחת התראה בנפילה</span></label></td>";
                 echo "<td class='ssl-token-table__emails'>";
-                echo "<select form='".esc_attr($form_id)."' name='token_emails[]' multiple class='ssl-token-emails__select' size='4'>";
-                foreach($email_options as $email => $label){
-                    $selected = in_array($email, $stored_emails, true) ? " selected" : '';
-                    echo "<option value='".esc_attr($email)."'{$selected}>".esc_html($label)."</option>";
+                $datalist_id = 'ssl-token-email-suggest-'.sanitize_key($token['id']);
+                echo "<div class='ssl-token-emails' data-email-list data-email-form='".esc_attr($form_id)."'>";
+                echo "<div class='ssl-token-email-list' data-email-chips>";
+                if(!empty($stored_emails)){
+                    foreach($stored_emails as $email){
+                        echo "<span class='ssl-token-email-chip' data-email-item>";
+                        echo "<input type='hidden' form='".esc_attr($form_id)."' name='token_emails[]' value='".esc_attr($email)."'>";
+                        echo "<span class='ssl-token-email-chip__text'>".esc_html($email)."</span>";
+                        echo "<button type='button' class='ssl-token-email-chip__remove' data-email-remove aria-label='הסר כתובת'>×</button>";
+                        echo "</span>";
+                    }
+                } else {
+                    echo "<span class='ssl-token-email-chip ssl-token-email-chip--empty' data-email-empty>אין נמענים</span>";
                 }
-                echo "</select>";
-                echo "<input form='".esc_attr($form_id)."' type='text' name='token_emails_extra' class='ssl-token-emails__input' placeholder='כתובות נוספות (מופרדות בפסיק)'>";
+                echo "</div>";
+                echo "<div class='ssl-token-email-add'>";
+                echo "<input type='email' data-email-input list='".esc_attr($datalist_id)."' placeholder='הוספת כתובת'>";
+                if(!empty($email_options)){
+                    echo "<datalist id='".esc_attr($datalist_id)."'>";
+                    foreach($email_options as $email => $label){
+                        echo "<option value='".esc_attr($email)."' label='".esc_attr($label)."'></option>";
+                    }
+                    echo "</datalist>";
+                }
+                echo "<button type='button' class='ssl-btn ssl-btn-surface' data-email-add>הוסף</button>";
+                echo "</div>";
+                echo "<div class='ssl-token-email-error' data-email-error></div>";
+                echo "</div>";
                 echo "</td>";
                 echo "<td><div class='ssl-token-table__actions'>";
                 echo "<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='update'>שמור</button>";
@@ -917,7 +1075,7 @@ JS;
         }
         echo "</tbody>";
         echo "</table>";
-        echo "<div class='ssl-note ssl-token-note'>ניתן לבחור מספר נמענים (Ctrl/Command) ולהוסיף כתובות נוספות בשדה החופשי. התראות ישלחו רק כאשר הטוקן מסומן לניטור.</div>";
+        echo "<div class='ssl-note ssl-token-note'>הוסיפו נמענים חדשים באמצעות השדה והכפתור, והסירו כתובות בעזרת כפתור ה-X שמופיע ליד כל נמען. התראות נשלחות רק כאשר הטוקן מסומן לניטור.</div>";
         echo "</div>";
         return ob_get_clean();
     }
