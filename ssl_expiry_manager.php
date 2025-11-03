@@ -7,6 +7,7 @@
  */
 if (!defined('ABSPATH')) exit;
 
+if (!class_exists('SSL_Expiry_Manager_AIO')) {
 class SSL_Expiry_Manager_AIO {
     const CPT = 'ssl_cert';
     const CRON_HOOK = 'ssl_expiry_manager_daily_check';
@@ -1710,34 +1711,6 @@ JS;
             'pending'=>count($queue),
         ],200);
     }
-
-    public function rest_agent_poll(WP_REST_Request $req){
-        $auth=$this->rest_auth($req); if(is_wp_error($auth)) return $auth;
-        $limit=min(100,max(1,intval($req->get_param('limit') ?: 50)));
-        $force=intval($req->get_param('force') ?: 0)===1;
-        $agent_param=$req->get_param('agent_only');
-        if($agent_param===null){
-            $agent_filter=true;
-        } else {
-            $agent_filter = intval($agent_param) === 1 ? true : (intval($agent_param) === 0 ? false : null);
-        }
-        $items=$this->collect_rest_tasks($limit,$force,$agent_filter);
-        $callback=rest_url('ssl/v1/report');
-        $token_value=isset($auth['token']['token']) ? (string)$auth['token']['token'] : '';
-        $jobs=[];
-        foreach($items as $item){
-            $jobs[]=$item + [
-                'callback'=>$callback,
-                'token'=>$token_value,
-            ];
-        }
-        return new WP_REST_Response([
-            'tasks'=>$jobs,
-            'count'=>count($jobs),
-            'callback'=>$callback,
-            'token'=>$token_value,
-        ],200);
-    }
     public function rest_report(WP_REST_Request $req){
         $auth=$this->rest_auth($req); if(is_wp_error($auth)) return $auth;
         $data=$req->get_json_params();
@@ -1874,4 +1847,8 @@ JS;
         }
     }
 }
-new SSL_Expiry_Manager_AIO();
+}
+
+if (!isset($GLOBALS['ssl_expiry_manager_aio']) || !($GLOBALS['ssl_expiry_manager_aio'] instanceof SSL_Expiry_Manager_AIO)) {
+    $GLOBALS['ssl_expiry_manager_aio'] = new SSL_Expiry_Manager_AIO();
+}
