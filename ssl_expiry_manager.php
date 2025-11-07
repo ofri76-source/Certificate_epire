@@ -1868,7 +1868,7 @@ JS;
                     }
                     $cn_label = $cn !== '' ? $cn : '—';
                     if($cn && strpos($cn, '*.') === 0){
-                        $cn_label .= ' (Wildcard)';
+                        $cn_label .= '';
                     }
                     $row_attrs = '';
                     if($group_mode === 'cn' && $total_in_group > 1 && $row_index > 0){
