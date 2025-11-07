@@ -24,12 +24,14 @@ class SSL_Expiry_Manager_AIO {
     const CPT = 'ssl_cert';
     const TABLE = 'ssl_em_certificates';
     const CRON_HOOK = 'ssl_expiry_manager_daily_check';
+    const CRON_SINGLE_HOOK = 'ssl_expiry_manager_single_check';
     const NONCE = 'ssl_expiry_manager_nonce';
     const EXPORT_ACTION = 'ssl_expiry_export';
     const IMPORT_ACTION = 'ssl_expiry_import';
     const SAVE_ACTION   = 'ssl_expiry_save';
     const DELETE_ACTION = 'ssl_expiry_delete';
     const RESTORE_ACTION= 'ssl_expiry_restore';
+    const BATCH_CHECK_ACTION = 'ssl_expiry_batch_check';
     const OPTION_TOKEN  = 'ssl_em_api_token';
     const OPTION_REMOTE = 'ssl_em_remote_client';
     const OPTION_QUEUE  = 'ssl_em_task_queue';
@@ -61,6 +63,8 @@ class SSL_Expiry_Manager_AIO {
         add_action('admin_post_'.self::DELETE_ACTION,         [$this,'handle_delete']);
         add_action('admin_post_nopriv_'.self::RESTORE_ACTION, [$this,'handle_restore']);
         add_action('admin_post_'.self::RESTORE_ACTION,        [$this,'handle_restore']);
+        add_action('admin_post_nopriv_'.self::BATCH_CHECK_ACTION, [$this,'handle_batch_check']);
+        add_action('admin_post_'.self::BATCH_CHECK_ACTION,        [$this,'handle_batch_check']);
         add_action('admin_post_nopriv_'.self::EXPORT_ACTION,  [$this,'handle_export']);
         add_action('admin_post_'.self::EXPORT_ACTION,         [$this,'handle_export']);
         add_action('admin_post_nopriv_'.self::IMPORT_ACTION,  [$this,'handle_import']);
@@ -75,6 +79,7 @@ class SSL_Expiry_Manager_AIO {
 
         add_action('wp', [$this,'ensure_cron']);
         add_action(self::CRON_HOOK, [$this,'cron_check_all']);
+        add_action(self::CRON_SINGLE_HOOK, [$this,'cron_check_single'], 10, 2);
 
         add_filter('empty_trash_days', function(){ return 90; });
         add_action('init', function(){ if(!function_exists('wp_handle_upload')) require_once(ABSPATH.'wp-admin/includes/file.php'); });
@@ -109,7 +114,7 @@ class SSL_Expiry_Manager_AIO {
         $fields = [
             'client_name'=>'string','site_url'=>'string','expiry_ts'=>'integer','source'=>'string',
             'notes'=>'string','images'=>'array','last_error'=>'string','expiry_ts_checked_at'=>'integer','agent_only'=>'boolean',
-            'cert_cn'=>'string'
+            'cert_cn'=>'string','cert_ca'=>'string'
         ];
         foreach ($fields as $k=>$t){
             register_post_meta(self::CPT,$k,[
@@ -135,6 +140,7 @@ class SSL_Expiry_Manager_AIO {
             client_name VARCHAR(255) NOT NULL DEFAULT '',
             site_url TEXT,
             common_name VARCHAR(255) NOT NULL DEFAULT '',
+            issuer_name VARCHAR(255) NOT NULL DEFAULT '',
             expiry_ts BIGINT NULL,
             source VARCHAR(50) NOT NULL DEFAULT '',
             notes LONGTEXT,
@@ -148,6 +154,7 @@ class SSL_Expiry_Manager_AIO {
             UNIQUE KEY post_id (post_id),
             KEY status (status),
             KEY cn_status (common_name(190), status),
+            KEY issuer_name (issuer_name(190)),
             KEY site_url (site_url(190))
         ) {$charset};";
         dbDelta($sql);
@@ -238,6 +245,7 @@ class SSL_Expiry_Manager_AIO {
         $checked = get_post_meta($post_id,'expiry_ts_checked_at',true);
         $images = get_post_meta($post_id,'images',true);
         $cn = (string)get_post_meta($post_id,'cert_cn',true);
+        $ca = (string)get_post_meta($post_id,'cert_ca',true);
         if(!is_array($images)){
             $images = [];
         }
@@ -254,6 +262,7 @@ class SSL_Expiry_Manager_AIO {
             'client_name' => wp_strip_all_tags($client),
             'site_url' => esc_url_raw($site),
             'common_name' => wp_strip_all_tags($cn),
+            'issuer_name' => wp_strip_all_tags($ca),
             'expiry_ts' => $expiry ? (int)$expiry : null,
             'source' => $this->normalize_source_value($source, 'manual'),
             'notes' => $notes,
@@ -262,7 +271,7 @@ class SSL_Expiry_Manager_AIO {
             'expiry_ts_checked_at' => $checked ? (int)$checked : null,
             'images' => $images_json,
         ];
-        $formats = ['%d','%s','%s','%s','%s','%d','%s','%s','%d','%s','%d','%s'];
+        $formats = ['%d','%s','%s','%s','%s','%s','%d','%s','%s','%d','%s','%d','%s'];
         $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE post_id = %d", $post_id));
         if($existing){
             $wpdb->update($table, $data, ['post_id' => (int)$post_id], $formats, ['%d']);
@@ -309,7 +318,8 @@ class SSL_Expiry_Manager_AIO {
 
         if($args['search'] !== ''){
             $search = '%' . $wpdb->esc_like($args['search']) . '%';
-            $where[] = "(client_name LIKE %s OR site_url LIKE %s OR common_name LIKE %s)";
+            $where[] = "(client_name LIKE %s OR site_url LIKE %s OR common_name LIKE %s OR issuer_name LIKE %s)";
+            $params[] = $search;
             $params[] = $search;
             $params[] = $search;
             $params[] = $search;
@@ -331,7 +341,6 @@ class SSL_Expiry_Manager_AIO {
             'client_name' => 'client_name',
             'site_url' => 'site_url',
             'expiry_ts' => 'expiry_ts',
-            'source' => 'source',
             'common_name' => 'common_name',
             'agent_only' => 'agent_only',
         ];
@@ -605,6 +614,11 @@ class SSL_Expiry_Manager_AIO {
 .ssl-manager__title h2{margin:0;color:#0f172a;font-size:1.75rem;font-weight:700;}
 .ssl-manager__subtitle{color:#64748b;font-size:.95rem;margin-top:4px;}
 .ssl-manager__header-actions{display:flex;gap:10px;align-items:center;}
+.ssl-inline-form{display:inline-flex;margin:0;}
+.ssl-inline-form .ssl-btn{white-space:nowrap;}
+.ssl-alert{margin:12px 0;padding:.65rem 1rem;border-radius:10px;font-size:.9rem;font-weight:600;}
+.ssl-alert--success{background:#dcfce7;color:#065f46;}
+.ssl-alert--warning{background:#fef3c7;color:#92400e;}
 .ssl-toolbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;}
 .ssl-footer-tools{padding-top:16px;border-top:1px solid #e2e8f0;display:flex;flex-direction:column;gap:16px;}
 .ssl-toolbar--bottom{width:100%;}
@@ -615,9 +629,9 @@ class SSL_Expiry_Manager_AIO {
 .ssl-toolbar--filters label{display:flex;flex-direction:column;gap:6px;width:100%;color:#475569;font-weight:600;font-size:.85rem;}
 .ssl-toolbar--filters input[type=search]{border:1px solid #cbd5f5;border-radius:10px;padding:.4rem .6rem;background:#fff;color:#1f2937;font-size:.9rem;}
 .ssl-toolbar__import input[type=file]{flex:1 1 180px;font-size:.9rem;color:#475569;}
-.ssl-page-size{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #cbd5f5;border-radius:10px;padding:6px 12px;font-size:.9rem;color:#1e293b;}
-.ssl-page-size label{display:flex;align-items:center;gap:8px;margin:0;font-weight:600;color:#1e293b;}
-.ssl-page-size select{border:none;background:transparent;font-size:.95rem;font-weight:600;color:#1e293b;min-width:80px;padding:0;}
+.ssl-page-size{display:flex;align-items:center;gap:8px;background:#f8fafc;border:1px solid #cbd5f5;border-radius:10px;padding:.14rem .6rem;font-size:.9rem;color:#1e293b;}
+.ssl-page-size label{display:flex;align-items:center;gap:6px;margin:0;font-weight:600;color:#1e293b;}
+.ssl-page-size select{border:none;background:transparent;font-size:.95rem;font-weight:600;color:#1e293b;min-width:80px;padding:0;height:100%;}
 .ssl-page-size select:focus{outline:none;}
 .ssl-pagination{margin-top:16px;display:flex;justify-content:center;}
 .ssl-pagination__list{display:flex;gap:6px;list-style:none;margin:0;padding:0;}
@@ -638,6 +652,8 @@ class SSL_Expiry_Manager_AIO {
 .ssl-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 14px 28px rgba(15,23,42,.05);}
 .ssl-table thead th{background:#f1f5f9;color:#0f172a;padding:14px 12px;text-align:right;font-size:.95rem;font-weight:700;border-bottom:1px solid #e2e8f0;}
 .ssl-table tbody td{padding:14px 12px;border-bottom:1px solid #e2e8f0;vertical-align:middle;color:#1e293b;font-size:.95rem;text-align:right;}
+.ssl-table thead th:nth-child(2),.ssl-table tbody td:nth-child(2),.ssl-table thead th:nth-child(3),.ssl-table tbody td:nth-child(3){text-align:left;}
+.ssl-table tbody td:nth-child(2),.ssl-table tbody td:nth-child(3){direction:ltr;}
 .ssl-table tbody tr:nth-child(even){background:#f8fafc;}
 .ssl-table tbody tr:hover{background:#eef2ff;}
 .ssl-table tbody tr:last-child td{border-bottom:none;}
@@ -654,11 +670,15 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details td:first-child:before{display:none;}
 .ssl-row-details td{background:#f1f5f9;font-size:.85rem;color:#475569;}
 .ssl-row-details__wrap{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
-.ssl-row-details__section{flex:1 1 240px;display:flex;flex-direction:column;gap:8px;}
+.ssl-row-details__section{flex:1 1 220px;display:flex;flex-direction:column;gap:8px;}
 .ssl-row-details__section h4{margin:0;font-size:.85rem;color:#0f172a;}
 .ssl-row-details__images{display:flex;flex-wrap:wrap;gap:8px;}
 .ssl-row-details__images a{display:inline-flex;}
 .ssl-row-details__error{color:#b91c1c;font-weight:600;}
+.ssl-row-details__meta{display:flex;flex-direction:column;gap:6px;}
+.ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
+.ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
+.ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;}
 .ssl-manager--compact .ssl-table thead th,.ssl-manager--compact .ssl-table tbody td{padding:8px 10px;font-size:.85rem;}
 .ssl-manager--compact .ssl-btn{padding:.14rem .45rem;font-size:.85rem;}
 .ssl-manager--compact .ssl-toolbar__group,.ssl-manager--compact .ssl-toolbar__import{gap:6px;padding:8px;}
@@ -875,6 +895,26 @@ document.addEventListener('click',function(e){
       });
     }
   }
+  var detailBtn = e.target.closest('[data-ssl-details]');
+  if(detailBtn){
+    e.preventDefault();
+    var detailId = detailBtn.getAttribute('data-ssl-details');
+    var detailRow = document.querySelector('[data-ssl-details-row="'+detailId+'"]');
+    if(detailRow){
+      var currentlyHidden = detailRow.hasAttribute('hidden');
+      if(currentlyHidden){
+        detailRow.removeAttribute('hidden');
+        detailRow.setAttribute('data-ssl-details-open','1');
+      } else {
+        detailRow.setAttribute('hidden','');
+        detailRow.setAttribute('data-ssl-details-open','0');
+      }
+      document.querySelectorAll('[data-ssl-details="'+detailId+'"]').forEach(function(btn){
+        if(detailRow.hasAttribute('hidden')) btn.classList.remove('is-active');
+        else btn.classList.add('is-active');
+      });
+    }
+  }
   var removeBtn = e.target.closest('[data-email-remove]');
   if(removeBtn){
     var wrapper = sslEmailFindWrapper(removeBtn);
@@ -902,7 +942,12 @@ document.addEventListener('click',function(e){
     groupToggle.setAttribute('aria-expanded', nextState ? 'true' : 'false');
     groupToggle.textContent = nextState ? '−' : '+';
     document.querySelectorAll('[data-ssl-group-child="'+groupKey+'"]').forEach(function(row){
-      if(nextState){
+      var isDetailRow = row.hasAttribute('data-ssl-details-row');
+      var shouldShow = nextState;
+      if(isDetailRow && row.getAttribute('data-ssl-details-open') !== '1'){
+        shouldShow = false;
+      }
+      if(shouldShow){
         row.removeAttribute('hidden');
       } else {
         row.setAttribute('hidden','');
@@ -928,6 +973,14 @@ window.addEventListener('DOMContentLoaded',function(){
     if(!row.hasAttribute('hidden')){
       var id=row.getAttribute('data-ssl-form');
       document.querySelectorAll('[data-ssl-edit="'+id+'"]').forEach(function(btn){btn.classList.add('is-active');});
+    }
+  });
+  document.querySelectorAll('[data-ssl-details-row]').forEach(function(row){
+    var id=row.getAttribute('data-ssl-details-row');
+    if(!row){return;}
+    if(!row.hasAttribute('hidden')){
+      row.setAttribute('data-ssl-details-open','1');
+      document.querySelectorAll('[data-ssl-details="'+id+'"]').forEach(function(btn){btn.classList.add('is-active');});
     }
   });
   document.querySelectorAll('[data-email-list]').forEach(function(wrapper){
@@ -1041,7 +1094,7 @@ JS;
 
     private function format_log_context_display($context){
         if(empty($context) || !is_array($context)){
-            return '<span class="ssl-log-context__empty">—</span>';
+            return '<span class="ssl-log-context__empty"></span>';
         }
         $items = [];
         foreach($context as $key => $value){
@@ -1061,7 +1114,7 @@ JS;
             $items[] = '<li><span class="ssl-log-context__key">'.esc_html((string)$label).'</span><span class="ssl-log-context__value">'.esc_html((string)$value).'</span></li>';
         }
         if(empty($items)){
-            return '<span class="ssl-log-context__empty">—</span>';
+            return '<span class="ssl-log-context__empty"></span>';
         }
         return '<ul class="ssl-log-context">'.implode('', $items).'</ul>';
     }
@@ -1329,6 +1382,9 @@ JS;
             'agent_only' => $agent_only_flag,
             'checked_at' => date_i18n('Y-m-d H:i:s'),
         ], $extra_context, $this->get_current_actor_context());
+        if(!empty($extra_context['issuer_name'])){
+            update_post_meta($post_id,'cert_ca', sanitize_text_field($extra_context['issuer_name']));
+        }
         if(!empty($log_context['expiry_ts'])){
             $log_context['expiry_ts'] = (int)$log_context['expiry_ts'];
             if($log_context['expiry_ts'] > 0){
@@ -1788,8 +1844,8 @@ JS;
                 foreach($preview_rows as $row){
                     $client_p = esc_html($row['client_name']);
                     $site_p = esc_html($row['site_url']);
-                    $cn_p = $row['common_name'] ? esc_html($row['common_name']) : '—';
-                    $expiry_display = '—';
+                    $cn_p = $row['common_name'] ? esc_html($row['common_name']) : '';
+                    $expiry_display = '';
                     if(!empty($row['expiry_date'])){
                         $preview_ts = $this->parse_user_date($row['expiry_date']);
                         if($preview_ts){
@@ -1801,7 +1857,7 @@ JS;
                     echo "<tr><td>{$client_p}</td><td>{$site_p}</td><td>{$cn_p}</td><td>{$expiry_display}</td></tr>";
                 }
                 if(empty($preview_rows)){
-                    echo "<tr><td colspan='5' class='ssl-empty'>לא נמצאו שורות בתצוגה מקדימה</td></tr>";
+                    echo "<tr><td colspan='4' class='ssl-empty'>לא נמצאו שורות בתצוגה מקדימה</td></tr>";
                 }
                 echo "</tbody></table>";
                 if($total_preview > count($preview_rows)){
@@ -1844,7 +1900,6 @@ JS;
             ['key' => 'common_name', 'label' => 'CN', 'sortable' => true],
             ['key' => 'expiry_ts', 'label' => 'תאריך תפוגה', 'sortable' => true],
             ['key' => 'days', 'label' => 'ימים', 'sortable' => false],
-            ['key' => 'source', 'label' => 'ליקוט', 'sortable' => true],
             ['key' => 'actions', 'label' => 'פעולות', 'sortable' => false],
         ];
         echo "<table class='ssl-table'><thead><tr>";
@@ -1895,6 +1950,7 @@ JS;
                     $notes = $row['notes'];
                     $err = $row['last_error'];
                     $imgs = $row['images'];
+                    $issuer = isset($row['issuer_name']) ? $row['issuer_name'] : '';
                     $days = $this->days_left($expiry);
                     $badge = $this->badge_class($days);
                     $days_txt = $days === null ? '' : $days;
@@ -1904,10 +1960,6 @@ JS;
                         $src_label = 'Auto';
                     } else {
                         $src_label = 'Manual';
-                    }
-                    $cn_label = $cn !== '' ? $cn : '—';
-                    if($cn && strpos($cn, '*.') === 0){
-                        $cn_label .= ' (Wildcard)';
                     }
                     $row_attrs = '';
                     if($group_mode === 'cn' && $total_in_group > 1 && $row_index > 0){
@@ -1922,13 +1974,13 @@ JS;
                         $client_cell = "<button type='button' class='ssl-btn ssl-btn-ghost ssl-group-toggle' data-ssl-group-toggle='".esc_attr($group_id)."' aria-expanded='false'>+</button>".$client_cell."<div class='ssl-group-meta'>".esc_html($toggle_label)."</div>";
                     }
                     echo "<td>{$client_cell}</td>";
-                    $link = $url ? "<a target='_blank' rel='noopener' href='".esc_url($url)."'>".esc_html($url)."</a>" : '—';
+                    $link = $url ? "<a target='_blank' rel='noopener' href='".esc_url($url)."'>".esc_html($url)."</a>" : '';
                     echo "<td>{$link}</td>";
-                    echo "<td>".esc_html($cn_label)."</td>";
+                    echo "<td>".esc_html($cn)."</td>";
                     echo "<td>".$this->fmt_date($expiry)."</td>";
                     echo "<td><span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span></td>";
-                    echo "<td>".esc_html($src_label)."</td>";
-                    $actions = "<a class='ssl-btn ssl-btn-surface' href='javascript:void(0)' data-ssl-edit='".esc_attr($id)."'>עריכה</a>";
+                    $actions = "<button class='ssl-btn ssl-btn-outline' type='button' data-ssl-details='".esc_attr($id)."'>פרטים</button>";
+                    $actions .= "<a class='ssl-btn ssl-btn-surface' href='javascript:void(0)' data-ssl-edit='".esc_attr($id)."'>עריכה</a>";
                     $del_url = esc_url(admin_url('admin-post.php'));
                     $actions .= "<form method='post' action='{$del_url}'>".$this->nonce_field()
                         ."<input type='hidden' name='action' value='".esc_attr(self::DELETE_ACTION)."' />"
@@ -1938,14 +1990,15 @@ JS;
                     echo "<td class='ssl-actions'>{$actions}</td>";
                     echo "</tr>";
 
-                    $detail_attrs = '';
-                    if($group_mode === 'cn' && $total_in_group > 1){
-                        $detail_attrs = " data-ssl-group-child='".esc_attr($group_id)."'";
-                        if($row_index > 0){
-                            $detail_attrs .= ' hidden';
-                        }
+                    $meta_items = [];
+                    if($src_label !== ''){
+                        $meta_items[] = "<div class='ssl-row-details__meta-item'><span class='ssl-row-details__meta-label'>ליקוט:</span><span class='ssl-row-details__meta-value'>".esc_html($src_label)."</span></div>";
                     }
-                    $notes_html = $notes !== '' ? nl2br(esc_html($notes)) : '—';
+                    if(!empty($issuer)){
+                        $meta_items[] = "<div class='ssl-row-details__meta-item'><span class='ssl-row-details__meta-label'>CA:</span><span class='ssl-row-details__meta-value'>".esc_html($issuer)."</span></div>";
+                    }
+                    $meta_html = "<div class='ssl-row-details__meta'>".implode('', $meta_items)."</div>";
+                    $notes_html = $notes !== '' ? nl2br(esc_html($notes)) : '';
                     $images_markup = '';
                     if(!empty($imgs)){
                         foreach($imgs as $aid){
@@ -1961,20 +2014,25 @@ JS;
                             }
                         }
                     }
-                    if($images_markup === ''){
-                        $images_markup = '<span class="ssl-note">—</span>';
-                    } else {
+                    if($images_markup !== ''){
                         $images_markup = "<div class='ssl-row-details__images'>{$images_markup}</div>";
+                    } else {
+                        $images_markup = "<div class='ssl-row-details__images'></div>";
                     }
-                    $error_markup = $err ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '<span class="ssl-note">—</span>';
+                    $error_markup = $err !== '' ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '';
                     $details_html = "<div class='ssl-row-details__wrap'>"
+                        ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
                         ."<div class='ssl-row-details__section'><h4>תמונות</h4>{$images_markup}</div>"
                         ."<div class='ssl-row-details__section'><h4>שגיאה</h4>{$error_markup}</div>"
                         ."</div>";
-                    echo "<tr class='ssl-row-details'{$detail_attrs}><td colspan='7'>{$details_html}</td></tr>";
+                    $detail_attrs = " data-ssl-details-row='".esc_attr($id)."' data-ssl-details-open='0' hidden";
+                    if($group_mode === 'cn' && $total_in_group > 1){
+                        $detail_attrs .= " data-ssl-group-child='".esc_attr($group_id)."'";
+                    }
+                    echo "<tr class='ssl-row-details'{$detail_attrs}><td colspan='6'>{$details_html}</td></tr>";
 
-                    echo "<tr data-ssl-form='".esc_attr($id)."' class='ssl-table__edit-row' hidden><td colspan='7'><div class='ssl-card ssl-card--form'>"
+                    echo "<tr data-ssl-form='".esc_attr($id)."' class='ssl-table__edit-row' hidden><td colspan='6'><div class='ssl-card ssl-card--form'>"
                         ."<div class='ssl-card__header'><h3>עריכת רשומה</h3><button type='button' class='ssl-btn ssl-btn-ghost' data-ssl-edit='".esc_attr($id)."' title='סגירת עריכה' aria-label='סגירת עריכה'>&#10005;</button></div>"
                         ."<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field()
                         ."<input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />"
@@ -1994,7 +2052,7 @@ JS;
                 }
             }
         } else {
-            echo "<tr><td class='ssl-empty' colspan='7'>אין נתונים</td></tr>";
+            echo "<tr><td class='ssl-empty' colspan='6'>אין נתונים</td></tr>";
         }
         echo "</tbody></table>";
 
@@ -2151,6 +2209,8 @@ JS;
         $add_action    = esc_attr(self::ADD_TOKEN_ACTION);
         $manage_action = esc_attr(self::MANAGE_TOKEN_ACTION);
         $email_choices = $this->collect_token_email_choices();
+        $scheduled_notice = isset($_GET['ssl_batch']) ? max(0, intval($_GET['ssl_batch'])) : 0;
+        $batch_error = isset($_GET['ssl_batch_error']);
         ob_start();
         echo "<div class='ssl-manager'>";
         echo "<div class='ssl-manager__header ssl-manager__header--tokens'>";
@@ -2162,8 +2222,19 @@ JS;
         echo "<a class='ssl-btn ssl-btn-surface' href='".esc_url($a['main_url'])."'>חזרה לטבלה הראשית</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>מעבר לסל מחזור</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
+        $batch_form_action = esc_url(admin_url('admin-post.php'));
+        echo "<form class='ssl-inline-form' method='post' action='{$batch_form_action}'>".$this->nonce_field()
+            ."<input type='hidden' name='action' value='".esc_attr(self::BATCH_CHECK_ACTION)."'>"
+            ."<button class='ssl-btn ssl-btn-primary' type='submit'>בדוק את כל הדומיינים</button>"
+            ."</form>";
         echo "</div>";
         echo "</div>";
+        if($scheduled_notice > 0){
+            $message = sprintf('תוזמנו %s בדיקות רציפות.', number_format_i18n($scheduled_notice));
+            echo "<div class='ssl-alert ssl-alert--success'>".esc_html($message)."</div>";
+        } elseif($batch_error){
+            echo "<div class='ssl-alert ssl-alert--warning'>לא נמצאו דומיינים זמינים לבדיקה.</div>";
+        }
 
         echo "<div class='ssl-card ssl-card--form ssl-card--token-create'>";
         echo "<form class='ssl-token-create' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
@@ -2192,7 +2263,7 @@ JS;
         if(!empty($tokens)){
             foreach($tokens as $token){
                 $form_id = 'ssl-token-manage-'.sanitize_key($token['id']);
-                $updated = !empty($token['updated']) ? date_i18n('d.m.Y H:i', (int)$token['updated']) : '—';
+                $updated = !empty($token['updated']) ? date_i18n('d.m.Y H:i', (int)$token['updated']) : '';
                 $status = isset($token['last_status']) ? $token['last_status'] : 'unknown';
                 $status_label = 'לא ידוע';
                 $dot_class = 'ssl-token-status__dot--unknown';
@@ -2214,7 +2285,9 @@ JS;
                 if(!empty($token['last_error']) && $status === 'offline'){
                     $status_meta[] = 'שגיאה אחרונה: '.$token['last_error'];
                 }
-                $status_meta[] = 'עודכן: '.$updated;
+                if($updated !== ''){
+                    $status_meta[] = 'עודכן: '.$updated;
+                }
                 $stored_emails = array_filter((array)($token['emails'] ?? []));
                 $email_options = $email_choices;
                 foreach($stored_emails as $email){
@@ -2511,6 +2584,26 @@ JS;
         exit;
     }
 
+    public function handle_batch_check() {
+        $this->check_nonce();
+        $redirect = wp_get_referer();
+        if(!$redirect){
+            $redirect = $this->resolve_token_page_url();
+        }
+        $redirect = remove_query_arg(['ssl_batch','ssl_batch_error'], $redirect);
+        $scheduled = $this->schedule_certificate_batch('manual', time() + 10, 120);
+        $this->log_activity('בוצעה בדיקת SSL יזומה לכל הדומיינים', array_merge([
+            'scheduled' => $scheduled,
+        ], $this->get_current_actor_context()));
+        if($scheduled > 0){
+            $redirect = add_query_arg('ssl_batch', $scheduled, $redirect);
+        } else {
+            $redirect = add_query_arg('ssl_batch_error', 1, $redirect);
+        }
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
     public function handle_save() {
         $this->check_nonce();
         $post_id=intval($_POST['post_id'] ?? 0);
@@ -2553,6 +2646,9 @@ JS;
                         update_post_meta($post_id,'expiry_ts',$resolved_expiry);
                         $expiry_ts = $resolved_expiry;
                     }
+                    if(!empty($cert_details['issuer_name'])){
+                        update_post_meta($post_id,'cert_ca', sanitize_text_field($cert_details['issuer_name']));
+                    }
                 }
             }
             if(!empty($_FILES['images']) && is_array($_FILES['images']['name'])){
@@ -2591,6 +2687,9 @@ JS;
                             $resolved_cn = sanitize_text_field($cert_details['common_name']);
                             update_post_meta($post_id,'cert_cn',$resolved_cn);
                             $cert_cn = $resolved_cn;
+                        }
+                        if(!empty($cert_details['issuer_name'])){
+                            update_post_meta($post_id,'cert_ca', sanitize_text_field($cert_details['issuer_name']));
                         }
                         update_post_meta($post_id,'source',$this->normalize_source_value('auto'));
                         $source = 'auto';
@@ -2776,58 +2875,145 @@ JS;
         wp_die('שלב ייבוא לא תקין');
     }
 
-    public function ensure_cron(){ if(!wp_next_scheduled(self::CRON_HOOK)) wp_schedule_event(time()+300,'daily',self::CRON_HOOK); }
+    public function ensure_cron(){
+        $target = $this->next_midnight_gmt();
+        $next = wp_next_scheduled(self::CRON_HOOK);
+        if(!$next){
+            wp_schedule_event($target, 'daily', self::CRON_HOOK);
+            return;
+        }
+        if(absint($next - $target) > 300){
+            wp_unschedule_event($next, self::CRON_HOOK);
+            wp_schedule_event($target, 'daily', self::CRON_HOOK);
+        }
+    }
     public function cron_check_all() {
+        $scheduled = $this->schedule_certificate_batch('cron', time(), 120);
+        $this->log_activity('תוזמנה בדיקת חצות לכל הדומיינים', array_merge([
+            'scheduled' => $scheduled,
+        ], $this->get_current_actor_context()));
+    }
+    private function next_midnight_gmt(){
+        $now_local = current_time('timestamp');
+        $now_gmt = current_time('timestamp', true);
+        $midnight_local = strtotime('today midnight', $now_local);
+        if($midnight_local <= $now_local){
+            $midnight_local = strtotime('tomorrow midnight', $now_local);
+        }
+        $offset = $midnight_local - $now_local;
+        return $now_gmt + $offset;
+    }
+    private function schedule_single_check($timestamp, $post_id, $context){
+        $timestamp = (int)$timestamp;
+        $post_id = (int)$post_id;
+        $context_key = sanitize_key($context ?: 'cron');
+        if($timestamp <= 0 || $post_id <= 0){
+            return false;
+        }
+        $args = [$post_id, $context_key];
+        $existing = wp_next_scheduled(self::CRON_SINGLE_HOOK, $args);
+        if($existing){
+            wp_unschedule_event($existing, self::CRON_SINGLE_HOOK, $args);
+        }
+        return (bool)wp_schedule_single_event($timestamp, self::CRON_SINGLE_HOOK, $args);
+    }
+    private function schedule_certificate_batch($context, $start_timestamp, $interval_seconds = 120){
+        $start = max(time(), (int)$start_timestamp);
+        $interval = max(1, (int)$interval_seconds);
         $settings = $this->get_remote_client_settings();
         $remote_ready = $this->remote_client_is_ready($settings);
-        $meta_query = [];
-        if(!$remote_ready && !empty($settings['local_fallback'])){
-            $meta_query[] = ['key'=>'agent_only','compare'=>'!=','value'=>1];
-        }
-        $args = [
-            'post_type'=>self::CPT,
-            'post_status'=>['publish','draft','pending'],
-            'posts_per_page'=>-1,
+        $query_args = [
+            'post_type' => self::CPT,
+            'post_status' => ['publish','draft','pending'],
+            'posts_per_page' => -1,
+            'fields' => 'ids',
         ];
-        if(!empty($meta_query)){
-            $args['meta_query'] = $meta_query;
+        if(!$remote_ready && !empty($settings['local_fallback'])){
+            $query_args['meta_query'] = [
+                [
+                    'key' => 'agent_only',
+                    'value' => 1,
+                    'compare' => '!=',
+                ],
+            ];
         }
-        $q=new WP_Query($args);
+        $scheduled = 0;
+        $offset = 0;
+        $q = new WP_Query($query_args);
         if($q->have_posts()){
-            while($q->have_posts()){ $q->the_post();
-                $id=get_the_ID();
-                $url=get_post_meta($id,'site_url',true);
-                if(!$url) continue;
-                if($remote_ready && $this->dispatch_remote_check($id,$url,'cron',$settings)){
+            foreach($q->posts as $post_id){
+                $post_id = (int)$post_id;
+                if($post_id <= 0){
                     continue;
                 }
-                if(!empty($settings['local_fallback'])){
-                    $cert_details = $this->fetch_ssl_certificate_details($url);
-                    if($cert_details){
-                        $resolved_expiry = !empty($cert_details['expiry_ts']) ? (int)$cert_details['expiry_ts'] : 0;
-                        $resolved_cn = !empty($cert_details['common_name']) ? sanitize_text_field($cert_details['common_name']) : '';
-                        if($resolved_expiry){
-                            update_post_meta($id,'expiry_ts',$resolved_expiry);
-                        }
-                        if($resolved_cn !== ''){
-                            update_post_meta($id,'cert_cn',$resolved_cn);
-                        }
-                        update_post_meta($id,'source',$this->normalize_source_value('auto'));
-                        delete_post_meta($id,'last_error');
-                        $this->sync_table_record($id, get_post_status($id));
-                        $this->log_activity('בדיקת SSL מקומית עודכנה', array_merge([
-                            'id' => $id,
-                            'client_name' => get_post_meta($id,'client_name',true),
-                            'site_url' => $url,
-                            'expiry_ts' => $resolved_expiry,
-                            'common_name' => $resolved_cn,
-                            'context' => 'cron',
-                        ], $this->get_current_actor_context()));
-                    }
+                $url = (string)get_post_meta($post_id,'site_url',true);
+                if($url === ''){
+                    continue;
+                }
+                $agent_only = (int)get_post_meta($post_id,'agent_only',true) ? 1 : 0;
+                if($agent_only && !$remote_ready){
+                    continue;
+                }
+                $run_at = $start + ($offset * $interval);
+                if($this->schedule_single_check($run_at, $post_id, $context)){
+                    $scheduled++;
+                    $offset++;
                 }
             }
             wp_reset_postdata();
         }
+        return $scheduled;
+    }
+    public function cron_check_single($post_id, $context = 'cron'){
+        $post_id = (int)$post_id;
+        if($post_id <= 0){
+            return;
+        }
+        $url = (string)get_post_meta($post_id,'site_url',true);
+        if($url === ''){
+            return;
+        }
+        $settings = $this->get_remote_client_settings();
+        $remote_ready = $this->remote_client_is_ready($settings);
+        $agent_only = (int)get_post_meta($post_id,'agent_only',true) ? 1 : 0;
+        if($remote_ready && $this->dispatch_remote_check($post_id, $url, $context, $settings)){
+            return;
+        }
+        if($agent_only && !$remote_ready){
+            return;
+        }
+        if(empty($settings['local_fallback'])){
+            return;
+        }
+        $cert_details = $this->fetch_ssl_certificate_details($url);
+        if(!$cert_details){
+            return;
+        }
+        $resolved_expiry = !empty($cert_details['expiry_ts']) ? (int)$cert_details['expiry_ts'] : 0;
+        $resolved_cn = !empty($cert_details['common_name']) ? sanitize_text_field($cert_details['common_name']) : '';
+        $resolved_ca = !empty($cert_details['issuer_name']) ? sanitize_text_field($cert_details['issuer_name']) : '';
+        if($resolved_expiry){
+            update_post_meta($post_id,'expiry_ts',$resolved_expiry);
+        }
+        if($resolved_cn !== ''){
+            update_post_meta($post_id,'cert_cn',$resolved_cn);
+        }
+        if($resolved_ca !== ''){
+            update_post_meta($post_id,'cert_ca',$resolved_ca);
+        }
+        update_post_meta($post_id,'source',$this->normalize_source_value('auto'));
+        delete_post_meta($post_id,'last_error');
+        update_post_meta($post_id,'expiry_ts_checked_at', time());
+        $this->sync_table_record($post_id, get_post_status($post_id));
+        $this->log_activity('בדיקת SSL מקומית עודכנה', array_merge([
+            'id' => $post_id,
+            'client_name' => get_post_meta($post_id,'client_name',true),
+            'site_url' => $url,
+            'expiry_ts' => $resolved_expiry,
+            'common_name' => $resolved_cn,
+            'issuer_name' => $resolved_ca,
+            'context' => $context,
+        ], $this->get_current_actor_context()));
     }
     private function fetch_ssl_certificate_details($url){
         $parsed_url = wp_parse_url($url);
@@ -2860,6 +3046,7 @@ JS;
             return null;
         }
         $common_name = '';
+        $issuer_name = '';
         if(!empty($cert_data['subject']) && is_array($cert_data['subject'])){
             if(!empty($cert_data['subject']['CN'])){
                 $common_name = $cert_data['subject']['CN'];
@@ -2880,9 +3067,47 @@ JS;
                 }
             }
         }
+        if(!empty($cert_data['issuer']) && is_array($cert_data['issuer'])){
+            $issuer_values = [];
+            $preferred = ['organizationName','O','commonName','CN'];
+            foreach($preferred as $key){
+                if(empty($cert_data['issuer'][$key])){
+                    continue;
+                }
+                $value = $cert_data['issuer'][$key];
+                if(is_array($value)){
+                    $value = reset($value);
+                }
+                if(is_string($value)){
+                    $issuer_values[] = $value;
+                }
+            }
+            if(empty($issuer_values)){
+                foreach($cert_data['issuer'] as $value){
+                    if(is_string($value)){
+                        $issuer_values[] = $value;
+                    } elseif(is_array($value)){
+                        foreach($value as $nested){
+                            if(is_string($nested)){
+                                $issuer_values[] = $nested;
+                            }
+                        }
+                    }
+                }
+            }
+            if(!empty($issuer_values)){
+                $issuer_values = array_map('trim', $issuer_values);
+                $issuer_values = array_filter($issuer_values, function($val){ return $val !== ''; });
+                $issuer_values = array_values(array_unique($issuer_values));
+                if(!empty($issuer_values)){
+                    $issuer_name = implode(' / ', $issuer_values);
+                }
+            }
+        }
         return [
             'expiry_ts' => (int)$cert_data['validTo_time_t'],
             'common_name' => $common_name,
+            'issuer_name' => $issuer_name,
         ];
     }
 
@@ -3088,6 +3313,17 @@ JS;
             if($reported_cn !== ''){
                 update_post_meta($id,'cert_cn',$reported_cn);
             }
+            $reported_issuer = '';
+            if(!empty($row['issuer_name'])){
+                $reported_issuer = sanitize_text_field($row['issuer_name']);
+            } elseif(!empty($row['issuer'])){
+                $reported_issuer = sanitize_text_field($row['issuer']);
+            } elseif(!empty($row['ca'])){
+                $reported_issuer = sanitize_text_field($row['ca']);
+            }
+            if($reported_issuer !== ''){
+                update_post_meta($id,'cert_ca',$reported_issuer);
+            }
             if(!empty($row['error'])){ $error_message = sanitize_text_field($row['error']); update_post_meta($id,'last_error',$error_message); }
             update_post_meta($id,'expiry_ts_checked_at', time());
             $this->sync_table_record($id, get_post_status($id));
@@ -3111,6 +3347,9 @@ JS;
             }
             if($reported_cn !== ''){
                 $extra['common_name'] = $reported_cn;
+            }
+            if($reported_issuer !== ''){
+                $extra['issuer_name'] = $reported_issuer;
             }
             if($reported_source !== ''){
                 $extra['source'] = $reported_source;
