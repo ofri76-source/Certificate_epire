@@ -5,6 +5,18 @@
  * Version: 1.5.0
  * Author: Ofri + GPT
  */
+ 
+ add_filter('rest_authentication_errors', function($result){
+    $route = $_GET['rest_route'] ?? ($_SERVER['REQUEST_URI'] ?? '');
+    if (strpos($route, '/ssl-agent/v1/') === false) return $result;
+
+    $hdr = $_SERVER['HTTP_X_AGENT_TOKEN'] ?? '';
+    $tok = get_option('ssl_agent_token', '');
+    if ($tok && hash_equals($tok, $hdr)) return true;
+
+    return new WP_Error('forbidden','bad token',['status'=>403]);
+}, 0);
+
 if (!defined('ABSPATH')) exit;
 
 if (!class_exists('SSL_Expiry_Manager_AIO')) {
@@ -1116,11 +1128,11 @@ JS;
             echo "<input type='hidden' name='".esc_attr($key)."' value='".esc_attr($value)."'>";
         }
         echo "<input type='hidden' name='ssl_page' value='1' data-ssl-page-input>";
-        echo "<label>רשומות בדף<select name='ssl_per_page' data-ssl-page-size>";
+        echo "<label>הצג<select name='ssl_per_page' data-ssl-page-size>";
         foreach($per_page_choices as $choice){
             $label = number_format_i18n($choice);
             $selected = selected($requested_per_page, $choice, false);
-            echo "<option value='".esc_attr($choice)."'{$selected}>".esc_html($label).' רשומות' ."</option>";
+            echo "<option value='".esc_attr($choice)."'{$selected}>".esc_html($label).'  רשומות לדף' ."</option>";
         }
         echo "</select></label>";
         echo "<noscript><button class='ssl-btn ssl-btn-outline' type='submit'>עדכן</button></noscript>";
@@ -1157,7 +1169,7 @@ JS;
         $q = new WP_Query($query_args);
 
         echo "<table class='ssl-table'><thead><tr>"
-                ."<th>שם הלקוח</th><th>אתר</th><th>פתיחה</th><th>תאריך תפוגה</th><th>ימים</th><th>ליקוט</th><th>הערות</th><th>תמונות</th><th>שגיאה</th><th>פעולות</th>"
+                ."<th>שם הלקוח</th><th>אתר</th>><th>תאריך תפוגה</th><th>ימים</th><th>ליקוט</th><th>הערות</th><th>תמונות</th><th>שגיאה</th><th>פעולות</th>"
               ."</tr></thead><tbody>";
 
         if ($q->have_posts()){
@@ -1177,7 +1189,6 @@ JS;
                 echo "<tr>";
                 echo "<td>".esc_html($client)."</td>";
                 echo "<td><a target='_blank' rel='noopener' href='".esc_url($url)."'>".esc_html($url)."</a></td>";
-                echo "<td>".$this->url_btn($url)."</td>";
                 echo "<td>".$this->fmt_date($expiry)."</td>";
                 echo "<td><span class='ssl-badge {$badge}'>".$days_txt."</span></td>";
                 echo "<td>".esc_html($src)."</td>";
@@ -1352,7 +1363,6 @@ JS;
         echo "<form class='ssl-token-form ssl-token-form--stack' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field().""
                 ."<input type='hidden' name='action' value='{$action}'>"
                 ."<input type='hidden' name='token_id' value='".esc_attr($token['id'])."'>"
-                ."<button class='ssl-btn ssl-btn-primary' type='submit' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>"
               ."</form>";
         echo "</div>";
         echo "<div class='ssl-note'>Header: <code>X-SSL-Token</code> = הערך לעיל</div>";
@@ -1488,7 +1498,6 @@ JS;
                 echo "</td>";
                 echo "<td><div class='ssl-token-table__actions'>";
                 echo "<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='update'>שמור</button>";
-                echo "<button class='ssl-btn ssl-btn-surface' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='regen' onclick=\"return confirm('ליצור טוקן חדש?')\">צור טוקן חדש</button>";
                 echo "<button class='ssl-btn ssl-btn-danger' type='submit' form='".esc_attr($form_id)."' name='sub_action' value='delete' onclick=\"return confirm('למחוק את הטוקן?')\">מחק</button>";
                 echo "</div></td>";
                 echo "</tr>";
