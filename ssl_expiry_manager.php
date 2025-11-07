@@ -415,7 +415,17 @@ class SSL_Expiry_Manager_AIO {
         if($contents === false){
             return $rows;
         }
-        $encoding = function_exists('mb_detect_encoding') ? mb_detect_encoding($contents, ['UTF-8','UTF-16','UTF-16LE','UTF-16BE','Windows-1255','ISO-8859-8','Windows-1252'], true) : false;
+        $encodings = ['UTF-8','UTF-16','UTF-16LE','UTF-16BE','CP1255','ISO-8859-8','Windows-1252'];
+        if(function_exists('mb_list_encodings')){
+            $supported = array_map('strtoupper', mb_list_encodings());
+            $encodings = array_values(array_filter($encodings, function($enc) use ($supported){
+                return in_array(strtoupper($enc), $supported, true);
+            }));
+        }
+        if(empty($encodings)){
+            $encodings = ['UTF-8'];
+        }
+        $encoding = function_exists('mb_detect_encoding') ? mb_detect_encoding($contents, $encodings, true) : false;
         if($encoding && strtoupper($encoding) !== 'UTF-8' && function_exists('mb_convert_encoding')){
             $contents = mb_convert_encoding($contents, 'UTF-8', $encoding);
         }
@@ -671,6 +681,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details td{background:#f1f5f9;font-size:.85rem;color:#475569;}
 .ssl-row-details__wrap{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
 .ssl-row-details__section{flex:1 1 220px;display:flex;flex-direction:column;gap:8px;}
+.ssl-row-details__section--actions{flex:0 0 140px;}
 .ssl-row-details__section h4{margin:0;font-size:.85rem;color:#0f172a;}
 .ssl-row-details__images{display:flex;flex-wrap:wrap;gap:8px;}
 .ssl-row-details__images a{display:inline-flex;}
@@ -679,6 +690,8 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
 .ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
 .ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;}
+.ssl-row-details__actions{display:flex;flex-direction:column;gap:8px;}
+.ssl-row-details__actions .ssl-btn{width:100%;justify-content:center;}
 .ssl-manager--compact .ssl-table thead th,.ssl-manager--compact .ssl-table tbody td{padding:8px 10px;font-size:.85rem;}
 .ssl-manager--compact .ssl-btn{padding:.14rem .45rem;font-size:.85rem;}
 .ssl-manager--compact .ssl-toolbar__group,.ssl-manager--compact .ssl-toolbar__import{gap:6px;padding:8px;}
@@ -690,7 +703,11 @@ class SSL_Expiry_Manager_AIO {
 .ssl-form,.ssl-card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;box-shadow:0 10px 24px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:16px;}
 .ssl-card__header{display:flex;justify-content:space-between;align-items:center;gap:12px;}
 .ssl-card__header h3{margin:0;font-size:1.1rem;color:#0f172a;}
-.ssl-card__body{display:grid;gap:14px;}
+.ssl-card__body{display:grid;gap:12px;}
+.ssl-card__body--compact{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px;}
+.ssl-card__body--compact label{margin:0;}
+.ssl-form-full{grid-column:1/-1;}
+.ssl-form-full textarea{min-height:80px;}
 .ssl-card--form label.ssl-card__inline{flex-direction:row;align-items:center;gap:12px;}
 .ssl-card--form label.ssl-card__inline span{flex:1;}
 .ssl-token-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;}
@@ -704,9 +721,12 @@ class SSL_Expiry_Manager_AIO {
 .ssl-card--links .ssl-card__footer{padding:0;}
 .ssl-card__footer--links{justify-content:flex-start;}
 .ssl-card__footer{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-start;}
-.ssl-card--form label{display:flex;flex-direction:column;gap:6px;color:#475569;font-weight:600;font-size:.9rem;}
-.ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.55rem .75rem;background:#f8fafc;color:#1f2937;font-size:.95rem;}
-.ssl-card--form textarea{min-height:110px;resize:vertical;}
+.ssl-inline-delete{display:inline-flex;margin:0;}
+.ssl-inline-delete button{min-width:0;}
+.ssl-card--form{padding:16px;gap:12px;}
+.ssl-card--form label{display:flex;flex-direction:column;gap:4px;color:#475569;font-weight:600;font-size:.85rem;}
+.ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.45rem .65rem;background:#f8fafc;color:#1f2937;font-size:.9rem;}
+.ssl-card--form textarea{min-height:80px;resize:vertical;}
 .ssl-card--form input[type=file]{padding:.45rem;}
 .ssl-card--form input[type=checkbox]{margin-left:6px;transform:scale(1.1);}
 .ssl-card--form .ssl-note{margin-top:4px;}
@@ -1815,14 +1835,14 @@ JS;
         echo "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field().""
               ."  <input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />"
               ."  <input type='hidden' name='post_id' value='0' />"
-              ."  <div class='ssl-card__body'>"
+              ."  <div class='ssl-card__body ssl-card__body--compact'>"
               ."    <label>שם הלקוח<input type='text' name='client_name' required></label>"
               ."    <label>אתר (URL)<input type='url' name='site_url' placeholder='https://example.com'></label>"
               ."    <label>תאריך תפוגה (DD-MM-YYYY) <input type='text' name='expiry_date' placeholder='31-12-2026'></label>"
               ."    <label>ליקוט <select name='source'><option value='auto' selected>Auto</option><option value='manual'>Manual</option><option value='agent'>Agent</option></select></label>"
               ."    <label>CN של התעודה<input type='text' name='cert_cn' placeholder='*.example.com'></label>"
-              ."    <label>הערות<textarea name='notes' rows='3'></textarea></label>"
-              ."    <label>תמונות<input type='file' name='images[]' multiple accept='image/*'></label>"
+              ."    <label class='ssl-form-full'>הערות<textarea name='notes' rows='2'></textarea></label>"
+              ."    <label class='ssl-form-full'>תמונות<input type='file' name='images[]' multiple accept='image/*'></label>"
               ."  </div>"
               ."  <div class='ssl-card__footer'><button class='ssl-btn ssl-btn-primary' type='submit'>שמור</button></div>"
               ."</form>"
@@ -1980,13 +2000,6 @@ JS;
                     echo "<td>".$this->fmt_date($expiry)."</td>";
                     echo "<td><span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span></td>";
                     $actions = "<button class='ssl-btn ssl-btn-outline' type='button' data-ssl-details='".esc_attr($id)."'>פרטים</button>";
-                    $actions .= "<a class='ssl-btn ssl-btn-surface' href='javascript:void(0)' data-ssl-edit='".esc_attr($id)."'>עריכה</a>";
-                    $del_url = esc_url(admin_url('admin-post.php'));
-                    $actions .= "<form method='post' action='{$del_url}'>".$this->nonce_field()
-                        ."<input type='hidden' name='action' value='".esc_attr(self::DELETE_ACTION)."' />"
-                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
-                        ."<button class='ssl-btn ssl-btn-danger' type='submit' onclick=\"return confirm('להעביר לסל מחזור?')\">מחיקה</button>"
-                        ."</form>";
                     echo "<td class='ssl-actions'>{$actions}</td>";
                     echo "</tr>";
 
@@ -2020,11 +2033,13 @@ JS;
                         $images_markup = "<div class='ssl-row-details__images'></div>";
                     }
                     $error_markup = $err !== '' ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '';
+                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button></div>";
                     $details_html = "<div class='ssl-row-details__wrap'>"
                         ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
                         ."<div class='ssl-row-details__section'><h4>תמונות</h4>{$images_markup}</div>"
                         ."<div class='ssl-row-details__section'><h4>שגיאה</h4>{$error_markup}</div>"
+                        ."<div class='ssl-row-details__section ssl-row-details__section--actions'><h4>פעולות</h4>{$actions_detail}</div>"
                         ."</div>";
                     $detail_attrs = " data-ssl-details-row='".esc_attr($id)."' data-ssl-details-open='0' hidden";
                     if($group_mode === 'cn' && $total_in_group > 1){
@@ -2032,22 +2047,30 @@ JS;
                     }
                     echo "<tr class='ssl-row-details'{$detail_attrs}><td colspan='6'>{$details_html}</td></tr>";
 
+                    $form_id = 'ssl-edit-form-'.md5($id.'-'.$group_id.'-'.$row_index);
                     echo "<tr data-ssl-form='".esc_attr($id)."' class='ssl-table__edit-row' hidden><td colspan='6'><div class='ssl-card ssl-card--form'>"
                         ."<div class='ssl-card__header'><h3>עריכת רשומה</h3><button type='button' class='ssl-btn ssl-btn-ghost' data-ssl-edit='".esc_attr($id)."' title='סגירת עריכה' aria-label='סגירת עריכה'>&#10005;</button></div>"
-                        ."<form method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field()
+                        ."<form id='".esc_attr($form_id)."' method='post' action='".esc_url(admin_url('admin-post.php'))."' enctype='multipart/form-data'>".$this->nonce_field()
                         ."<input type='hidden' name='action' value='".esc_attr(self::SAVE_ACTION)."' />"
                         ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
-                        ."<div class='ssl-card__body'>"
+                        ."<div class='ssl-card__body ssl-card__body--compact'>"
                         ."<label>שם הלקוח<input type='text' name='client_name' value='".esc_attr($client)."'></label>"
                         ."<label>אתר (URL)<input type='url' name='site_url' value='".esc_attr($url)."'></label>"
                         ."<label>תאריך תפוגה (DD-MM-YYYY) <input type='text' name='expiry_date' value='".esc_attr($this->fmt_date($expiry))."'></label>"
                         ."<label>ליקוט <select name='source'><option value='auto' ".selected($src,'auto',false).">Auto</option><option value='manual' ".selected($src,'manual',false).">Manual</option><option value='agent' ".selected($src,'agent',false).">Agent</option></select></label>"
                         ."<label>CN של התעודה<input type='text' name='cert_cn' value='".esc_attr($cn)."'></label>"
-                        ."<label>הערות<textarea name='notes' rows='3'>".esc_textarea($notes)."</textarea></label>"
-                        ."<label>תמונות (להוסיף חדשות) <input type='file' name='images[]' multiple accept='image/*'></label>"
+                        ."<label class='ssl-form-full'>הערות<textarea name='notes' rows='2'>".esc_textarea($notes)."</textarea></label>"
+                        ."<label class='ssl-form-full'>תמונות (להוסיף חדשות) <input type='file' name='images[]' multiple accept='image/*'></label>"
                         ."</div>"
-                        ."<div class='ssl-card__footer'><button class='ssl-btn ssl-btn-primary' type='submit'>שמור</button></div>"
                         ."</form>"
+                        ."<div class='ssl-card__footer'>"
+                        ."<button class='ssl-btn ssl-btn-primary' type='submit' form='".esc_attr($form_id)."'>שמור</button>"
+                        ."<form class='ssl-inline-delete' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
+                        ."<input type='hidden' name='action' value='".esc_attr(self::DELETE_ACTION)."' />"
+                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
+                        ."<button class='ssl-btn ssl-btn-danger' type='submit' onclick=\"return confirm('להעביר לסל מחזור?')\">מחק</button>"
+                        ."</form>"
+                        ."</div>"
                         ."</div></td></tr>";
                 }
             }
