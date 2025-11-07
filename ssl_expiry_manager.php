@@ -40,10 +40,10 @@ class SSL_Expiry_Manager_AIO {
     const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
-    const PAGE_MAIN_FALLBACK  = 'https://kbtest.macomp.co.il/?p=9427';
-    const PAGE_TRASH_FALLBACK = 'https://kbtest.macomp.co.il/?p=9441';
-    const PAGE_TOKEN_FALLBACK = 'https://kbtest.macomp.co.il/?p=9447';
-    const PAGE_LOG_FALLBACK   = 'https://kbtest.macomp.co.il/?p=9458';
+    const PAGE_MAIN_FALLBACK  = 'https://kb.macomp.co.il/?page_id=11136';
+    const PAGE_TRASH_FALLBACK = 'https://kb.macomp.co.il/?page_id=11134';
+    const PAGE_TOKEN_FALLBACK = 'https://kb.macomp.co.il/?page_id=11138';
+    const PAGE_LOG_FALLBACK   = 'https://kb.macomp.co.il/?page_id=11141';
 
     public function __construct() {
         add_action('init', [$this,'register_cpt']);
@@ -301,7 +301,7 @@ class SSL_Expiry_Manager_AIO {
             'source' => '',
             'agent_only' => '',
             'status' => ['publish','draft','pending'],
-            'orderby' => 'client_name',
+            'orderby' => 'expiry_ts',
             'order' => 'ASC',
         ];
         $args = wp_parse_args($args, $defaults);
@@ -344,11 +344,16 @@ class SSL_Expiry_Manager_AIO {
             'common_name' => 'common_name',
             'agent_only' => 'agent_only',
         ];
-        $orderby = isset($allowed_orderby[$args['orderby']]) ? $allowed_orderby[$args['orderby']] : 'client_name';
+        $default_orderby = 'expiry_ts';
+        $orderby = isset($allowed_orderby[$args['orderby']]) ? $allowed_orderby[$args['orderby']] : $default_orderby;
         $where_sql = 'WHERE ' . implode(' AND ', $where);
         $limit = max(1, (int)$args['per_page']);
         $offset = max(0, ((int)$args['page'] - 1) * $limit);
-        $order_sql = "ORDER BY {$orderby} {$order}, client_name ASC";
+        if($orderby === 'expiry_ts'){
+            $order_sql = "ORDER BY (expiry_ts IS NULL) ASC, expiry_ts {$order}, client_name ASC";
+        } else {
+            $order_sql = "ORDER BY {$orderby} {$order}, client_name ASC";
+        }
         $limit_sql = "LIMIT %d OFFSET %d";
         $rows_sql = "SELECT * FROM {$table} {$where_sql} {$order_sql} {$limit_sql}";
         $rows_params = array_merge($params, [$limit, $offset]);
@@ -1935,19 +1940,28 @@ JS;
         echo "</tr></thead><tbody>";
 
         if(!empty($rows)){
-            $grouped_rows = [];
             if($group_mode === 'cn'){
+                $group_sequence = [];
+                $group_map = [];
                 foreach($rows as $row){
-                    $key = $row['common_name'] !== '' ? $row['common_name'] : 'ללא CN';
-                    if(!isset($grouped_rows[$key])){
-                        $grouped_rows[$key] = [
-                            'key' => $key,
+                    $cn_value = isset($row['common_name']) ? $row['common_name'] : '';
+                    if($cn_value === ''){
+                        $group_sequence[] = [
+                            'key' => 'row-'.$row['post_id'],
+                            'rows' => [$row],
+                        ];
+                        continue;
+                    }
+                    if(!isset($group_map[$cn_value])){
+                        $group_sequence[] = [
+                            'key' => $cn_value,
                             'rows' => [],
                         ];
+                        $group_map[$cn_value] = count($group_sequence) - 1;
                     }
-                    $grouped_rows[$key]['rows'][] = $row;
+                    $group_index = $group_map[$cn_value];
+                    $group_sequence[$group_index]['rows'][] = $row;
                 }
-                $group_sequence = array_values($grouped_rows);
             } else {
                 $group_sequence = [];
                 foreach($rows as $row){
@@ -1999,7 +2013,7 @@ JS;
                     echo "<td>".esc_html($cn)."</td>";
                     echo "<td>".$this->fmt_date($expiry)."</td>";
                     echo "<td><span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span></td>";
-                    $actions = "<button class='ssl-btn ssl-btn-outline' type='button' data-ssl-details='".esc_attr($id)."'>פרטים</button>";
+                    $actions = "<button class='ssl-btn ssl-btn-ghost' type='button' data-ssl-details='".esc_attr($id)."' aria-label='הצג פרטים'>+</button>";
                     echo "<td class='ssl-actions'>{$actions}</td>";
                     echo "</tr>";
 
@@ -2248,7 +2262,7 @@ JS;
         $batch_form_action = esc_url(admin_url('admin-post.php'));
         echo "<form class='ssl-inline-form' method='post' action='{$batch_form_action}'>".$this->nonce_field()
             ."<input type='hidden' name='action' value='".esc_attr(self::BATCH_CHECK_ACTION)."'>"
-            ."<button class='ssl-btn ssl-btn-primary' type='submit'>בדוק את כל הדומיינים</button>"
+            ."<button class='ssl-btn ssl-btn-primary' type='submit'>בדוק את כל הדומיינים (מרווח 10 שניות)</button>"
             ."</form>";
         echo "</div>";
         echo "</div>";
@@ -2614,7 +2628,7 @@ JS;
             $redirect = $this->resolve_token_page_url();
         }
         $redirect = remove_query_arg(['ssl_batch','ssl_batch_error'], $redirect);
-        $scheduled = $this->schedule_certificate_batch('manual', time() + 10, 120);
+        $scheduled = $this->schedule_certificate_batch('manual', time() + 10, 10);
         $this->log_activity('בוצעה בדיקת SSL יזומה לכל הדומיינים', array_merge([
             'scheduled' => $scheduled,
         ], $this->get_current_actor_context()));
