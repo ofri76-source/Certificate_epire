@@ -31,6 +31,7 @@ class SSL_Expiry_Manager_AIO {
     const SAVE_ACTION   = 'ssl_expiry_save';
     const DELETE_ACTION = 'ssl_expiry_delete';
     const RESTORE_ACTION= 'ssl_expiry_restore';
+    const SINGLE_CHECK_ACTION = 'ssl_expiry_single_check';
     const BATCH_CHECK_ACTION = 'ssl_expiry_batch_check';
     const OPTION_TOKEN  = 'ssl_em_api_token';
     const OPTION_REMOTE = 'ssl_em_remote_client';
@@ -65,6 +66,8 @@ class SSL_Expiry_Manager_AIO {
         add_action('admin_post_'.self::RESTORE_ACTION,        [$this,'handle_restore']);
         add_action('admin_post_nopriv_'.self::BATCH_CHECK_ACTION, [$this,'handle_batch_check']);
         add_action('admin_post_'.self::BATCH_CHECK_ACTION,        [$this,'handle_batch_check']);
+        add_action('admin_post_nopriv_'.self::SINGLE_CHECK_ACTION, [$this,'handle_single_check']);
+        add_action('admin_post_'.self::SINGLE_CHECK_ACTION,        [$this,'handle_single_check']);
         add_action('admin_post_nopriv_'.self::EXPORT_ACTION,  [$this,'handle_export']);
         add_action('admin_post_'.self::EXPORT_ACTION,         [$this,'handle_export']);
         add_action('admin_post_nopriv_'.self::IMPORT_ACTION,  [$this,'handle_import']);
@@ -710,8 +713,8 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
 .ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
 .ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;}
-.ssl-row-details__actions{display:flex;flex-direction:column;gap:8px;}
-.ssl-row-details__actions .ssl-btn{width:100%;justify-content:center;}
+.ssl-row-details__actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
+.ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;}
 .ssl-manager--compact .ssl-table thead th,.ssl-manager--compact .ssl-table tbody td{padding:8px 10px;font-size:.85rem;}
 .ssl-manager--compact .ssl-btn{padding:.14rem .45rem;font-size:.85rem;}
 .ssl-manager--compact .ssl-toolbar__group,.ssl-manager--compact .ssl-toolbar__import{gap:6px;padding:8px;}
@@ -741,8 +744,8 @@ class SSL_Expiry_Manager_AIO {
 .ssl-card--links .ssl-card__footer{padding:0;}
 .ssl-card__footer--links{justify-content:flex-start;}
 .ssl-card__footer{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-start;}
-.ssl-inline-delete{display:inline-flex;margin:0;}
-.ssl-inline-delete button{min-width:0;}
+.ssl-inline-delete,.ssl-inline-refresh{display:inline-flex;margin:0;}
+.ssl-inline-delete button,.ssl-inline-refresh button{min-width:0;}
 .ssl-card--form{padding:16px;gap:12px;}
 .ssl-card--form label{display:flex;flex-direction:column;gap:4px;color:#475569;font-weight:600;font-size:.85rem;}
 .ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.45rem .65rem;background:#f8fafc;color:#1f2937;font-size:.9rem;}
@@ -1870,6 +1873,8 @@ JS;
                 $preserved_query[$key] = sanitize_text_field(wp_unslash($value));
             }
         }
+        $single_success_id = isset($_GET['ssl_single']) ? max(0, intval($_GET['ssl_single'])) : 0;
+        $single_error_code = isset($_GET['ssl_single_error']) ? sanitize_key($_GET['ssl_single_error']) : '';
         $sort = isset($preserved_query['ssl_sort']) ? sanitize_key($preserved_query['ssl_sort']) : 'expiry_ts';
         $order = isset($preserved_query['ssl_order']) && strtolower($preserved_query['ssl_order']) === 'desc' ? 'DESC' : 'ASC';
         $search = $preserved_query['ssl_search'] ?? '';
@@ -1880,6 +1885,7 @@ JS;
         }
         $agent_filter = '';
         unset($preserved_query['ssl_agent']);
+        unset($preserved_query['ssl_single'], $preserved_query['ssl_single_error']);
         $group_mode = 'cn';
         $preserved_query['ssl_group'] = 'cn';
         $table_data = $this->fetch_certificates([
@@ -1897,8 +1903,30 @@ JS;
         $is_create_hidden = empty($_GET['ssl_new']);
         $create_attr = $is_create_hidden ? ' hidden' : '';
         $admin_email = sanitize_email(get_option('admin_email'));
+        $single_success_message = '';
+        $single_error_message = '';
+        if($single_success_id > 0){
+            $client_label = sanitize_text_field((string)get_post_meta($single_success_id,'client_name',true));
+            $site_label_raw = (string)get_post_meta($single_success_id,'site_url',true);
+            $site_label = $site_label_raw !== '' ? esc_url_raw($site_label_raw) : '';
+            if($client_label === ''){
+                $client_label = sprintf('רשומה #%d', $single_success_id);
+            }
+            if($site_label !== ''){
+                $single_success_message = sprintf('הופעלה בדיקת SSL עבור %s (%s).', $client_label, $site_label);
+            } else {
+                $single_success_message = sprintf('הופעלה בדיקת SSL עבור %s.', $client_label);
+            }
+        } elseif($single_error_code !== ''){
+            $single_error_messages = [
+                'missing' => 'לא נבחרה רשומה לעדכון.',
+                'invalid' => 'הרשומה שביקשת לעדכן לא נמצאה.',
+                'nosite'  => 'לא הוגדר אתר לרשומה זו ולכן לא ניתן לבצע בדיקה.',
+            ];
+            $single_error_message = $single_error_messages[$single_error_code] ?? 'לא ניתן היה להפעיל עדכון לרשומה.';
+        }
         $export_url = esc_url(site_url('?ssl_action='.self::EXPORT_ACTION));
-        $refresh_url = esc_url(remove_query_arg('ssl_new'));
+        $refresh_url = esc_url(remove_query_arg(['ssl_new','ssl_single','ssl_single_error']));
         $manager_classes = 'ssl-manager ssl-manager--compact';
         ob_start();
         echo "<div class='".esc_attr($manager_classes)."'>";
@@ -1931,6 +1959,11 @@ JS;
         echo "<noscript><button class='ssl-btn ssl-btn-outline' type='submit'>עדכן</button></noscript>";
         echo "</form>";
         echo "</div></div>";
+        if($single_success_message !== ''){
+            echo "<div class='ssl-alert ssl-alert--success'>".esc_html($single_success_message)."</div>";
+        } elseif($single_error_message !== ''){
+            echo "<div class='ssl-alert ssl-alert--warning'>".esc_html($single_error_message)."</div>";
+        }
 
         echo "<div class='ssl-card ssl-card--form' data-ssl-create{$create_attr}>";
         echo "<div class='ssl-card__header'><h3>הוספת רשומה חדשה</h3><button type='button' class='ssl-btn ssl-btn-ghost' data-ssl-toggle='create' title='סגירת הטופס' aria-label='סגירת הטופס'>&#10005;</button></div>";
@@ -2229,7 +2262,13 @@ JS;
                     } else {
                         $images_markup = "<div class='ssl-row-details__images'></div>";
                     }
-                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button></div>";
+                    $error_markup = $err !== '' ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '';
+                    $refresh_form = "<form class='ssl-inline-refresh' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
+                        ."<input type='hidden' name='action' value='".esc_attr(self::SINGLE_CHECK_ACTION)."' />"
+                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
+                        ."<button class='ssl-btn ssl-btn-outline' type='submit'>עדכון רשומה</button>"
+                        ."</form>";
+                    $actions_detail = "<div class='ssl-row-details__actions'>".$refresh_form."<button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button></div>";
                     $details_html = "<div class='ssl-row-details__wrap'>"
                         ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
@@ -2833,6 +2872,54 @@ JS;
         } else {
             $redirect = add_query_arg('ssl_batch_error', 1, $redirect);
         }
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
+    public function handle_single_check() {
+        $this->check_nonce();
+        $post_id = isset($_POST['post_id']) ? (int)$_POST['post_id'] : 0;
+        $redirect = '';
+        if(isset($_POST['redirect_to'])){
+            $candidate = esc_url_raw(wp_unslash($_POST['redirect_to']));
+            if($candidate){
+                $redirect = $candidate;
+            }
+        }
+        if(!$redirect){
+            $redirect = wp_get_referer();
+        }
+        if(!$redirect){
+            $redirect = $this->resolve_main_page_url();
+        }
+        $redirect = remove_query_arg(['ssl_single','ssl_single_error'], $redirect);
+        if($post_id <= 0){
+            $redirect = add_query_arg('ssl_single_error', 'missing', $redirect);
+            wp_safe_redirect($redirect);
+            exit;
+        }
+        $post = get_post($post_id);
+        if(!$post || $post->post_type !== self::CPT){
+            $redirect = add_query_arg('ssl_single_error', 'invalid', $redirect);
+            wp_safe_redirect($redirect);
+            exit;
+        }
+        $site = (string)get_post_meta($post_id,'site_url',true);
+        if($site === ''){
+            $redirect = add_query_arg('ssl_single_error', 'nosite', $redirect);
+            wp_safe_redirect($redirect);
+            exit;
+        }
+        $this->cron_check_single($post_id, 'manual-request');
+        update_post_meta($post_id,'expiry_ts_checked_at', time());
+        $client = (string)get_post_meta($post_id,'client_name',true);
+        $this->log_activity('בקשת בדיקת SSL ידנית נשלחה', array_merge([
+            'id' => $post_id,
+            'client_name' => $client,
+            'site_url' => $site,
+            'context' => 'manual-request',
+        ], $this->get_current_actor_context()));
+        $redirect = add_query_arg('ssl_single', $post_id, $redirect);
         wp_safe_redirect($redirect);
         exit;
     }
