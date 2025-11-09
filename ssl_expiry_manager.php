@@ -879,6 +879,26 @@ function sslBulkUpdateState(form){
     master.checked = items.length > 0 && checkedCount === items.length;
   }
 }
+function sslGroupSetState(toggle, nextState){
+  if(!toggle) return;
+  var groupKey = toggle.getAttribute('data-ssl-group-toggle');
+  if(!groupKey) return;
+  var isExpanded = !!nextState;
+  toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+  toggle.textContent = isExpanded ? '−' : '+';
+  document.querySelectorAll('[data-ssl-group-child="'+groupKey+'"]').forEach(function(row){
+    var isDetailRow = row.hasAttribute('data-ssl-details-row');
+    var shouldShow = isExpanded;
+    if(isDetailRow && row.getAttribute('data-ssl-details-open') !== '1'){
+      shouldShow = false;
+    }
+    if(shouldShow){
+      row.removeAttribute('hidden');
+    } else {
+      row.setAttribute('hidden','');
+    }
+  });
+}
 function sslEmailHandleAdd(wrapper){
   if(!wrapper) return;
   var input = wrapper.querySelector('[data-email-input]');
@@ -1028,7 +1048,6 @@ document.addEventListener('click',function(e){
   var groupToggle = e.target.closest('[data-ssl-group-toggle]');
   if(groupToggle){
     e.preventDefault();
-    var groupKey = groupToggle.getAttribute('data-ssl-group-toggle');
     var expanded = groupToggle.getAttribute('aria-expanded') === 'true';
     var nextState = !expanded;
     groupToggle.setAttribute('aria-expanded', nextState ? 'true' : 'false');
@@ -2052,6 +2071,10 @@ JS;
         echo "    <input type='hidden' name='ssl_group' value='cn'>";
         echo "    <label>חיפוש<input type='search' name='ssl_search' value='".esc_attr($search)."' placeholder='חפש לקוח, דומיין או CN' data-ssl-filter-search></label>";
         echo "  </form>";
+        echo "  <div class='ssl-toolbar__group ssl-toolbar__group--toggles'>";
+        echo "    <button type='button' class='ssl-btn ssl-btn-surface' data-ssl-expand-all>הרחב הכל</button>";
+        echo "    <button type='button' class='ssl-btn ssl-btn-surface' data-ssl-collapse-all>כווץ הכל</button>";
+        echo "  </div>";
         echo "</div>";
 
         $has_rows = !empty($rows);
@@ -2118,8 +2141,46 @@ JS;
             }
             foreach($group_sequence as $group_index => $group){
                 $group_id = 'group-'.md5($group['key'].$group_index);
-                $total_in_group = count($group['rows']);
-                foreach($group['rows'] as $row_index => $row){
+                $group_rows = $group['rows'];
+                $total_in_group = count($group_rows);
+                $is_cn_group = ($group_mode === 'cn' && $total_in_group > 1);
+                if($is_cn_group){
+                    $first_row = $group_rows[0];
+                    $group_cn = isset($first_row['common_name']) ? (string)$first_row['common_name'] : '';
+                    if($group_cn === ''){
+                        $group_cn = (string)$group['key'];
+                    }
+                    $group_expiry = 0;
+                    foreach($group_rows as $candidate_row){
+                        $candidate_expiry = !empty($candidate_row['expiry_ts']) ? (int)$candidate_row['expiry_ts'] : 0;
+                        if($candidate_expiry > 0 && ($group_expiry === 0 || $candidate_expiry < $group_expiry)){
+                            $group_expiry = $candidate_expiry;
+                        }
+                    }
+                    $group_days = $group_expiry > 0 ? $this->days_left($group_expiry) : null;
+                    $group_badge = $this->badge_class($group_days);
+                    $group_days_txt = $group_days === null ? '' : $group_days;
+                    $group_badge_html = ($group_badge === '' && $group_days_txt === '') ? '' : "<span class='ssl-badge {$group_badge}'>".esc_html($group_days_txt)."</span>";
+                    $toggle_label = sprintf('%s רשומות', number_format_i18n($total_in_group));
+                    $group_toggle_label = $group_cn !== '' ? sprintf('הצג רשומות עבור %s', $group_cn) : 'הצג רשומות מאוחדות';
+                    $group_toggle_html = sprintf(
+                        "<button type='button' class='ssl-btn ssl-btn-ghost ssl-group-toggle' data-ssl-group-toggle='%s' aria-expanded='false' aria-label='%s'>+</button>",
+                        esc_attr($group_id),
+                        esc_attr($group_toggle_label)
+                    );
+                    $group_meta_html = "<div class='ssl-group-meta'>".esc_html($toggle_label)."</div>";
+                    $group_client_text = "<div class='ssl-client-cell__text'>".esc_html($group_cn).$group_meta_html."</div>";
+                    $group_client_controls = "<div class='ssl-client-cell__controls'>".$group_toggle_html."</div>";
+                    echo "<tr data-ssl-group-parent='".esc_attr($group_id)."'>";
+                    echo "<td class='ssl-select-cell'></td>";
+                    echo "<td><div class='ssl-client-cell'>".$group_client_controls.$group_client_text."</div></td>";
+                    echo "<td></td>";
+                    echo "<td>".esc_html($group_cn)."</td>";
+                    echo "<td>".$this->fmt_date($group_expiry)."</td>";
+                    echo "<td>{$group_badge_html}</td>";
+                    echo "</tr>";
+                }
+                foreach($group_rows as $row_index => $row){
                     $id = (int)$row['post_id'];
                     $client = $row['client_name'];
                     $url = $row['site_url'];
@@ -2133,6 +2194,7 @@ JS;
                     $days = $this->days_left($expiry);
                     $badge = $this->badge_class($days);
                     $days_txt = $days === null ? '' : $days;
+                    $badge_html = ($badge === '' && $days_txt === '') ? '' : "<span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span>";
                     if($src === 'agent'){
                         $src_label = 'Agent';
                     } elseif($src === 'auto'){
@@ -2141,10 +2203,8 @@ JS;
                         $src_label = 'Manual';
                     }
                     $row_attrs = '';
-                    if($group_mode === 'cn' && $total_in_group > 1 && $row_index > 0){
+                    if($is_cn_group){
                         $row_attrs = " data-ssl-group-child='".esc_attr($group_id)."' hidden";
-                    } elseif($group_mode === 'cn' && $total_in_group > 1){
-                        $row_attrs = " data-ssl-group-parent='".esc_attr($group_id)."'";
                     }
                     echo "<tr{$row_attrs}>";
                     echo "<td class='ssl-select-cell'><input type='checkbox' name='post_ids[]' value='".esc_attr($id)."' data-ssl-select-item aria-label='בחר רשומה' form='".esc_attr($bulk_form_id)."'></td>";
@@ -2238,11 +2298,10 @@ JS;
                         ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
                         ."<div class='ssl-row-details__section'><h4>תמונות</h4>{$images_markup}</div>"
-                        ."<div class='ssl-row-details__section'><h4>שגיאה</h4>{$error_markup}</div>"
                         ."<div class='ssl-row-details__section ssl-row-details__section--actions'><h4>פעולות</h4>{$actions_detail}</div>"
                         ."</div>";
                     $detail_attrs = " data-ssl-details-row='".esc_attr($id)."' data-ssl-details-open='0' hidden";
-                    if($group_mode === 'cn' && $total_in_group > 1){
+                    if($is_cn_group){
                         $detail_attrs .= " data-ssl-group-child='".esc_attr($group_id)."'";
                     }
                     echo "<tr class='ssl-row-details'{$detail_attrs}><td colspan='".esc_attr($column_count)."'>{$details_html}</td></tr>";
@@ -3592,9 +3651,21 @@ JS;
             ], $this->get_current_actor_context()));
         }
         $queue = $this->get_task_queue();
+        $jobs = [];
+        foreach($items as $item){
+            $jobs[] = [
+                'id'          => isset($item['id']) ? (int)$item['id'] : 0,
+                'site_url'    => isset($item['site_url']) ? $item['site_url'] : '',
+                'client_name' => isset($item['client_name']) ? $item['client_name'] : '',
+                'request_id'  => isset($item['request_id']) ? $item['request_id'] : '',
+                'context'     => isset($item['context']) ? $item['context'] : null,
+                'callback'    => isset($item['callback']) ? $item['callback'] : rest_url('ssl-agent/v1/report'),
+            ];
+        }
         return new WP_REST_Response([
-            'tasks'=>$items,
-            'count'=>count($items),
+            'jobs'   => $jobs,
+            'tasks'  => $jobs,
+            'count'  => count($jobs),
             'pending'=>count($queue),
         ],200);
     }
