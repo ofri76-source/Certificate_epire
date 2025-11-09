@@ -1060,6 +1060,10 @@ document.addEventListener('click',function(e){
   var groupToggle = e.target.closest('[data-ssl-group-toggle]');
   if(groupToggle){
     e.preventDefault();
+    var groupKey = groupToggle ? groupToggle.getAttribute('data-ssl-group-toggle') : '';
+    if(!groupKey){
+      return;
+    }
     var expanded = groupToggle.getAttribute('aria-expanded') === 'true';
     var nextState = !expanded;
     groupToggle.setAttribute('aria-expanded', nextState ? 'true' : 'false');
@@ -1067,13 +1071,13 @@ document.addEventListener('click',function(e){
     document.querySelectorAll('[data-ssl-group-child="'+groupKey+'"]').forEach(function(row){
       var isDetailRow = row.hasAttribute('data-ssl-details-row');
       var isEditRow = row.hasAttribute('data-ssl-form');
+      var isDataRow = !isDetailRow && !isEditRow;
       var shouldShow = nextState;
-      if(isDetailRow && row.getAttribute('data-ssl-details-open') !== '1'){
-        shouldShow = false;
-      }
+
       if(isEditRow && row.getAttribute('data-ssl-form-open') !== '1'){
         shouldShow = false;
       }
+
       if(shouldShow){
         row.hidden = false;
         row.removeAttribute('hidden');
@@ -1082,6 +1086,28 @@ document.addEventListener('click',function(e){
         row.hidden = true;
         row.setAttribute('hidden','');
         row.style.display = 'none';
+      }
+
+      if(isDetailRow){
+        var detailId = row.getAttribute('data-ssl-details-row');
+        if(nextState){
+          row.setAttribute('data-ssl-details-open','1');
+        } else {
+          row.setAttribute('data-ssl-details-open','0');
+        }
+        document.querySelectorAll('[data-ssl-details="'+detailId+'"]').forEach(function(btn){
+          if(nextState){
+            btn.classList.add('is-active');
+            btn.textContent = '−';
+          } else {
+            btn.classList.remove('is-active');
+            btn.textContent = '+';
+          }
+        });
+      }
+
+      if(isDataRow){
+        row.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
       }
     });
   }
