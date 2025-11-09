@@ -704,8 +704,9 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details td{background:#f1f5f9;font-size:.85rem;color:#475569;}
 .ssl-row-details__wrap{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
 .ssl-row-details__section{flex:1 1 220px;display:flex;flex-direction:column;gap:8px;}
-.ssl-row-details__section--actions{flex:0 0 140px;}
+.ssl-row-details__section--actions{flex:0 0 160px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
 .ssl-row-details__section h4{margin:0;font-size:.85rem;color:#0f172a;}
+.ssl-row-details__section--actions h4{align-self:flex-start;}
 .ssl-row-details__images{display:flex;flex-wrap:wrap;gap:8px;}
 .ssl-row-details__images a{display:inline-flex;}
 .ssl-row-details__error{color:#b91c1c;font-weight:600;}
@@ -713,9 +714,10 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
 .ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
 .ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;}
-.ssl-row-details__actions{display:flex;flex-direction:row;gap:8px;align-items:center;justify-content:flex-end;}
-.ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;padding:.2rem .6rem;font-size:.85rem;}
-.ssl-row-details__actions form{display:inline-flex;}
+.ssl-row-details__actions{display:flex;flex-direction:column;gap:6px;align-items:flex-end;}
+.ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;}
+.ssl-row-details__actions form{display:flex;}
+.ssl-btn--compact{padding:.15rem .5rem;font-size:.8rem;}
 .ssl-manager--compact .ssl-table thead th,.ssl-manager--compact .ssl-table tbody td{padding:8px 10px;font-size:.85rem;}
 .ssl-manager--compact .ssl-btn{padding:.14rem .45rem;font-size:.85rem;}
 .ssl-manager--compact .ssl-toolbar__group,.ssl-manager--compact .ssl-toolbar__import{gap:6px;padding:8px;}
@@ -2186,6 +2188,7 @@ JS;
                     $expiry = !empty($row['expiry_ts']) ? (int)$row['expiry_ts'] : 0;
                     $src = $row['source'];
                     $notes = $row['notes'];
+                    $err = isset($row['last_error']) ? (string)$row['last_error'] : '';
                     $imgs = $row['images'];
                     $issuer = isset($row['issuer_name']) ? $row['issuer_name'] : '';
                     $days = $this->days_left($expiry);
@@ -2288,9 +2291,9 @@ JS;
                     $refresh_form = "<form class='ssl-inline-refresh' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
                         ."<input type='hidden' name='action' value='".esc_attr(self::SINGLE_CHECK_ACTION)."' />"
                         ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
-                        ."<button class='ssl-btn ssl-btn-outline' type='submit'>עדכון רשומה</button>"
+                        ."<button class='ssl-btn ssl-btn-outline ssl-btn--compact' type='submit'>עדכון רשומה</button>"
                         ."</form>";
-                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button>".$refresh_form."</div>";
+                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface ssl-btn--compact' data-ssl-edit='".esc_attr($id)."'>עריכה</button>".$refresh_form."</div>";
                     $details_html = "<div class='ssl-row-details__wrap'>"
                         ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
