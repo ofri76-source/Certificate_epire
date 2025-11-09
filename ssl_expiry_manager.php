@@ -993,8 +993,16 @@ document.addEventListener('click',function(e){
     var id = edit.getAttribute('data-ssl-edit');
     var row = document.querySelector('[data-ssl-form="'+id+'"]');
     if(row){
-      if(row.hasAttribute('hidden')){row.removeAttribute('hidden');}
-      else{row.setAttribute('hidden','');}
+      var nowHidden = row.hasAttribute('hidden');
+      if(nowHidden){
+        row.removeAttribute('hidden');
+        row.hidden = false;
+        row.style.display = 'table-row';
+      } else {
+        row.setAttribute('hidden','');
+        row.hidden = true;
+        row.style.display = 'none';
+      }
       row.setAttribute('data-ssl-form-open', row.hasAttribute('hidden') ? '0' : '1');
       document.querySelectorAll('[data-ssl-edit="'+id+'"]').forEach(function(btn){
         if(row.hasAttribute('hidden')) btn.classList.remove('is-active');
@@ -1011,9 +1019,13 @@ document.addEventListener('click',function(e){
       var currentlyHidden = detailRow.hasAttribute('hidden');
       if(currentlyHidden){
         detailRow.removeAttribute('hidden');
+        detailRow.hidden = false;
+        detailRow.style.display = 'table-row';
         detailRow.setAttribute('data-ssl-details-open','1');
       } else {
         detailRow.setAttribute('hidden','');
+        detailRow.hidden = true;
+        detailRow.style.display = 'none';
         detailRow.setAttribute('data-ssl-details-open','0');
       }
       document.querySelectorAll('[data-ssl-details="'+detailId+'"]').forEach(function(btn){
@@ -1065,7 +1077,7 @@ document.addEventListener('click',function(e){
       if(shouldShow){
         row.hidden = false;
         row.removeAttribute('hidden');
-        row.style.removeProperty('display');
+        row.style.display = 'table-row';
       } else {
         row.hidden = true;
         row.setAttribute('hidden','');
@@ -1096,8 +1108,12 @@ window.addEventListener('DOMContentLoaded',function(){
       var id=row.getAttribute('data-ssl-form');
       document.querySelectorAll('[data-ssl-edit="'+id+'"]').forEach(function(btn){btn.classList.add('is-active');});
       row.setAttribute('data-ssl-form-open','1');
+      row.hidden = false;
+      row.style.display = 'table-row';
     } else {
       row.setAttribute('data-ssl-form-open','0');
+      row.hidden = true;
+      row.style.display = 'none';
     }
   });
   document.querySelectorAll('[data-ssl-details-row]').forEach(function(row){
@@ -1105,6 +1121,13 @@ window.addEventListener('DOMContentLoaded',function(){
     if(!row){return;}
     var isOpen = !row.hasAttribute('hidden');
     row.setAttribute('data-ssl-details-open', isOpen ? '1' : '0');
+    if(isOpen){
+      row.hidden = false;
+      row.style.display = 'table-row';
+    } else {
+      row.hidden = true;
+      row.style.display = 'none';
+    }
     document.querySelectorAll('[data-ssl-details="'+id+'"]').forEach(function(btn){
       if(isOpen){
         btn.classList.add('is-active');
@@ -1131,8 +1154,10 @@ window.addEventListener('DOMContentLoaded',function(){
     if(shouldShow){
       row.hidden = false;
       row.removeAttribute('hidden');
+      row.style.display = 'table-row';
     } else {
       row.hidden = true;
+      row.style.display = 'none';
     }
   });
   document.querySelectorAll('[data-ssl-page-size]').forEach(function(select){
