@@ -713,8 +713,9 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
 .ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
 .ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;}
-.ssl-row-details__actions{display:flex;flex-direction:column;gap:8px;align-items:flex-end;}
-.ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;}
+.ssl-row-details__actions{display:flex;flex-direction:row;gap:8px;align-items:center;justify-content:flex-end;}
+.ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;padding:.2rem .6rem;font-size:.85rem;}
+.ssl-row-details__actions form{display:inline-flex;}
 .ssl-manager--compact .ssl-table thead th,.ssl-manager--compact .ssl-table tbody td{padding:8px 10px;font-size:.85rem;}
 .ssl-manager--compact .ssl-btn{padding:.14rem .45rem;font-size:.85rem;}
 .ssl-manager--compact .ssl-toolbar__group,.ssl-manager--compact .ssl-toolbar__import{gap:6px;padding:8px;}
@@ -1060,9 +1061,13 @@ document.addEventListener('click',function(e){
         shouldShow = false;
       }
       if(shouldShow){
+        row.hidden = false;
         row.removeAttribute('hidden');
+        row.style.removeProperty('display');
       } else {
+        row.hidden = true;
         row.setAttribute('hidden','');
+        row.style.display = 'none';
       }
     });
   }
@@ -1110,6 +1115,23 @@ window.addEventListener('DOMContentLoaded',function(){
   });
   document.querySelectorAll('[data-email-list]').forEach(function(wrapper){
     sslEmailEnsure(wrapper);
+  });
+  document.querySelectorAll('[data-ssl-group-child]').forEach(function(row){
+    var isDetailRow = row.hasAttribute('data-ssl-details-row');
+    var isEditRow = row.hasAttribute('data-ssl-form');
+    var shouldShow = false;
+    if(isDetailRow && row.getAttribute('data-ssl-details-open') === '1'){
+      shouldShow = true;
+    }
+    if(isEditRow && row.getAttribute('data-ssl-form-open') === '1'){
+      shouldShow = true;
+    }
+    if(shouldShow){
+      row.hidden = false;
+      row.removeAttribute('hidden');
+    } else {
+      row.hidden = true;
+    }
   });
   document.querySelectorAll('[data-ssl-page-size]').forEach(function(select){
     select.addEventListener('change',function(){
@@ -2268,7 +2290,7 @@ JS;
                         ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
                         ."<button class='ssl-btn ssl-btn-outline' type='submit'>עדכון רשומה</button>"
                         ."</form>";
-                    $actions_detail = "<div class='ssl-row-details__actions'>".$refresh_form."<button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button></div>";
+                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface' data-ssl-edit='".esc_attr($id)."'>עריכה</button>".$refresh_form."</div>";
                     $details_html = "<div class='ssl-row-details__wrap'>"
                         ."<div class='ssl-row-details__section'><h4>פרטי תעודה</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
