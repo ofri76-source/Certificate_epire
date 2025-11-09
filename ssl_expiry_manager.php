@@ -43,6 +43,7 @@ class SSL_Expiry_Manager_AIO {
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
     const SAVE_CERT_TYPES_ACTION = 'ssl_save_cert_types';
+    const TOGGLE_FOLLOW_UP_ACTION = 'ssl_toggle_follow_up';
     const PAGE_MAIN_FALLBACK  = 'https://kb.macomp.co.il/?page_id=11136';
     const PAGE_TRASH_FALLBACK = 'https://kb.macomp.co.il/?page_id=11134';
     const PAGE_TOKEN_FALLBACK = 'https://kb.macomp.co.il/?page_id=11138';
@@ -82,6 +83,8 @@ class SSL_Expiry_Manager_AIO {
         add_action('admin_post_'.self::MANAGE_TOKEN_ACTION,        [$this,'handle_manage_token']);
         add_action('admin_post_nopriv_'.self::SAVE_CERT_TYPES_ACTION, [$this,'handle_save_cert_types']);
         add_action('admin_post_'.self::SAVE_CERT_TYPES_ACTION,        [$this,'handle_save_cert_types']);
+        add_action('admin_post_nopriv_'.self::TOGGLE_FOLLOW_UP_ACTION, [$this,'handle_toggle_follow_up']);
+        add_action('admin_post_'.self::TOGGLE_FOLLOW_UP_ACTION,        [$this,'handle_toggle_follow_up']);
         add_action('admin_post_ssl_save_remote_client',            [$this,'handle_save_remote_client']);
 
         add_action('wp', [$this,'ensure_cron']);
@@ -122,7 +125,7 @@ class SSL_Expiry_Manager_AIO {
         $fields = [
             'client_name'=>'string','site_url'=>'string','expiry_ts'=>'integer','source'=>'string',
             'notes'=>'string','images'=>'array','last_error'=>'string','expiry_ts_checked_at'=>'integer','agent_only'=>'boolean',
-            'cert_cn'=>'string','cert_ca'=>'string','cert_type'=>'string'
+            'follow_up'=>'boolean','cert_cn'=>'string','cert_ca'=>'string','cert_type'=>'string'
         ];
         foreach ($fields as $k=>$t){
             register_post_meta(self::CPT,$k,[
@@ -154,6 +157,7 @@ class SSL_Expiry_Manager_AIO {
             cert_type VARCHAR(100) NOT NULL DEFAULT '',
             notes LONGTEXT,
             agent_only TINYINT(1) NOT NULL DEFAULT 0,
+            follow_up TINYINT(1) NOT NULL DEFAULT 0,
             last_error LONGTEXT,
             expiry_ts_checked_at BIGINT NULL,
             images LONGTEXT,
@@ -252,6 +256,7 @@ class SSL_Expiry_Manager_AIO {
         $cert_type = (string)get_post_meta($post_id,'cert_type',true);
         $notes = (string)get_post_meta($post_id,'notes',true);
         $agent_only = (int)get_post_meta($post_id,'agent_only',true);
+        $follow_up = (int)get_post_meta($post_id,'follow_up',true);
         $last_error = (string)get_post_meta($post_id,'last_error',true);
         $checked = get_post_meta($post_id,'expiry_ts_checked_at',true);
         $images = get_post_meta($post_id,'images',true);
@@ -286,11 +291,12 @@ class SSL_Expiry_Manager_AIO {
             'cert_type' => $cert_type_value,
             'notes' => $notes,
             'agent_only' => $agent_only ? 1 : 0,
+            'follow_up' => $follow_up ? 1 : 0,
             'last_error' => $last_error,
             'expiry_ts_checked_at' => $checked ? (int)$checked : null,
             'images' => $images_json,
         ];
-        $formats = ['%d','%s','%s','%s','%s','%s','%d','%s','%s','%s','%d','%s','%d','%s'];
+        $formats = ['%d','%s','%s','%s','%s','%s','%d','%s','%s','%s','%d','%d','%s','%d','%s'];
         $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE post_id = %d", $post_id));
         if($existing){
             $wpdb->update($table, $data, ['post_id' => (int)$post_id], $formats, ['%d']);
@@ -385,8 +391,15 @@ class SSL_Expiry_Manager_AIO {
         } else {
             $total = $wpdb->get_var($count_sql);
         }
+        $count_with_expiry_sql = $count_sql . " AND expiry_ts IS NOT NULL";
+        if(!empty($params)){
+            $total_with_expiry = $wpdb->get_var($wpdb->prepare($count_with_expiry_sql, $params));
+        } else {
+            $total_with_expiry = $wpdb->get_var($count_with_expiry_sql);
+        }
         foreach($rows as &$row){
             $row['agent_only'] = !empty($row['agent_only']);
+            $row['follow_up'] = !empty($row['follow_up']);
             $row['images'] = $row['images'] ? json_decode($row['images'], true) : [];
             if(!is_array($row['images'])){
                 $row['images'] = [];
@@ -395,6 +408,7 @@ class SSL_Expiry_Manager_AIO {
         return [
             'rows' => $rows,
             'total' => (int)$total,
+            'total_with_expiry' => (int)$total_with_expiry,
         ];
     }
 
@@ -487,7 +501,8 @@ class SSL_Expiry_Manager_AIO {
                     'source' => 4,
                     'cert_type' => 5,
                     'notes' => 6,
-                    'agent_only' => 8,
+                    'agent_only' => 7,
+                    'follow_up' => 8,
                 ];
             } elseif($count >= 8){
                 $header_map = [
@@ -542,6 +557,7 @@ class SSL_Expiry_Manager_AIO {
             $cert_type_raw = $this->value_from_row($flat, $header_map, 'cert_type');
             $notes = $this->value_from_row($flat, $header_map, 'notes');
             $agent_raw = $this->value_from_row($flat, $header_map, 'agent_only');
+            $follow_up_raw = $this->value_from_row($flat, $header_map, 'follow_up');
             $date_norm = $this->normalize_import_date($expiry_raw);
             $expiry_ts = $date_norm ? strtotime($date_norm.' 00:00:00') : null;
             $cert_type = $this->sanitize_cert_type_key($cert_type_raw, $default_type);
@@ -558,6 +574,7 @@ class SSL_Expiry_Manager_AIO {
                 'cert_type' => $cert_type,
                 'notes' => sanitize_textarea_field($notes),
                 'agent_only' => $this->interpret_bool($agent_raw),
+                'follow_up' => $this->interpret_bool($follow_up_raw),
             ];
         }
         return $normalized;
@@ -583,6 +600,7 @@ class SSL_Expiry_Manager_AIO {
             'cert_type' => ['cert_type','type','סוג','סוג תעודה'],
             'notes' => ['notes','הערות'],
             'agent_only' => ['agent_only','agent','סוכן','agent only'],
+            'follow_up' => ['follow_up','מעקב'],
         ];
         $map = [];
         foreach($aliases as $field => $options){
@@ -731,6 +749,15 @@ class SSL_Expiry_Manager_AIO {
 .ssl-client-cell__name{font-weight:600;color:#0f172a;display:inline-block;}
 .ssl-details-placeholder{display:inline-flex;width:28px;height:28px;}
 .ssl-group-placeholder{display:inline-block;min-width:16px;color:#cbd5f5;}
+.ssl-follow-up-cell{text-align:center;width:90px;}
+.ssl-follow-up-form{display:flex;justify-content:center;}
+.ssl-follow-up-toggle{display:inline-flex;align-items:center;gap:6px;}
+.ssl-follow-up-toggle input{margin:0;}
+.ssl-color-cell{min-width:150px;}
+.ssl-color-cell__content{display:inline-flex;align-items:center;gap:8px;flex-direction:row-reverse;justify-content:flex-end;}
+.ssl-color-cell__label{font-weight:600;color:#0f172a;text-align:right;}
+.ssl-color-dot{width:16px;height:16px;border-radius:50%;background:var(--ssl-dot-color,#1f2937);box-shadow:0 0 0 2px rgba(255,255,255,.9),0 4px 10px rgba(15,23,42,.18);}
+.ssl-row--stale td{background:#fee2e2!important;}
 .ssl-details-toggle{font-weight:700;font-size:.9rem;}
 .ssl-group-toggle{border:none;background:#e2e8f0;color:#1e3a8a;border-radius:999px;padding:.2rem .6rem;font-size:.8rem;font-weight:700;cursor:pointer;margin:0;}
 .ssl-group-toggle[aria-expanded="true"]{background:#1e3a8a;color:#fff;}
@@ -795,6 +822,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-inline-delete button,.ssl-inline-refresh button{min-width:0;}
 .ssl-card--form{padding:16px;gap:12px;}
 .ssl-card--form label{display:flex;flex-direction:column;gap:4px;color:#475569;font-weight:600;font-size:.85rem;}
+.ssl-form-toggle{flex-direction:row;align-items:center;gap:8px;}
 .ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.45rem .65rem;background:#f8fafc;color:#1f2937;font-size:.9rem;}
 .ssl-card--form textarea{min-height:80px;resize:vertical;}
 .ssl-card--form input[type=file]{padding:.45rem;}
@@ -995,14 +1023,27 @@ function sslGroupSetState(toggle, nextState){
   toggle.textContent = isExpanded ? '−' : '+';
   document.querySelectorAll('[data-ssl-group-child="'+groupKey+'"]').forEach(function(row){
     var isDetailRow = row.hasAttribute('data-ssl-details-row');
-    var shouldShow = isExpanded;
-    if(isDetailRow && row.getAttribute('data-ssl-details-open') !== '1'){
+    var isEditRow = row.hasAttribute('data-ssl-form');
+    var shouldShow = isExpanded && !isDetailRow;
+    if(isEditRow && row.getAttribute('data-ssl-form-open') !== '1'){
       shouldShow = false;
     }
     if(shouldShow){
+      row.hidden = false;
       row.removeAttribute('hidden');
+      row.style.display = 'table-row';
     } else {
+      row.hidden = true;
       row.setAttribute('hidden','');
+      row.style.display = 'none';
+    }
+    if(isDetailRow){
+      row.setAttribute('data-ssl-details-open','0');
+      var detailId = row.getAttribute('data-ssl-details-row');
+      document.querySelectorAll('[data-ssl-details="'+detailId+'"]').forEach(function(btn){
+        btn.classList.remove('is-active');
+        btn.textContent = '+';
+      });
     }
   });
 }
@@ -1074,6 +1115,12 @@ document.addEventListener('change',function(e){
     var bulkForm = e.target.form;
     if(bulkForm){
       sslBulkUpdateState(bulkForm);
+    }
+  }
+  if(e.target.matches('[data-ssl-follow-up-toggle]')){
+    var followForm = e.target.closest('[data-ssl-follow-up-form]');
+    if(followForm){
+      followForm.submit();
     }
   }
 });
@@ -1202,50 +1249,7 @@ document.addEventListener('click',function(e){
     }
     var expanded = groupToggle.getAttribute('aria-expanded') === 'true';
     var nextState = !expanded;
-    groupToggle.setAttribute('aria-expanded', nextState ? 'true' : 'false');
-    groupToggle.textContent = nextState ? '−' : '+';
-    document.querySelectorAll('[data-ssl-group-child="'+groupKey+'"]').forEach(function(row){
-      var isDetailRow = row.hasAttribute('data-ssl-details-row');
-      var isEditRow = row.hasAttribute('data-ssl-form');
-      var isDataRow = !isDetailRow && !isEditRow;
-      var shouldShow = nextState;
-
-      if(isEditRow && row.getAttribute('data-ssl-form-open') !== '1'){
-        shouldShow = false;
-      }
-
-      if(shouldShow){
-        row.hidden = false;
-        row.removeAttribute('hidden');
-        row.style.display = 'table-row';
-      } else {
-        row.hidden = true;
-        row.setAttribute('hidden','');
-        row.style.display = 'none';
-      }
-
-      if(isDetailRow){
-        var detailId = row.getAttribute('data-ssl-details-row');
-        if(nextState){
-          row.setAttribute('data-ssl-details-open','1');
-        } else {
-          row.setAttribute('data-ssl-details-open','0');
-        }
-        document.querySelectorAll('[data-ssl-details="'+detailId+'"]').forEach(function(btn){
-          if(nextState){
-            btn.classList.add('is-active');
-            btn.textContent = '−';
-          } else {
-            btn.classList.remove('is-active');
-            btn.textContent = '+';
-          }
-        });
-      }
-
-      if(isDataRow){
-        row.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
-      }
-    });
+    sslGroupSetState(groupToggle, nextState);
   }
 });
 document.addEventListener('keydown',function(e){
@@ -1323,25 +1327,6 @@ window.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('[data-email-list]').forEach(function(wrapper){
     sslEmailEnsure(wrapper);
   });
-  document.querySelectorAll('[data-ssl-group-child]').forEach(function(row){
-    var isDetailRow = row.hasAttribute('data-ssl-details-row');
-    var isEditRow = row.hasAttribute('data-ssl-form');
-    var shouldShow = false;
-    if(isDetailRow && row.getAttribute('data-ssl-details-open') === '1'){
-      shouldShow = true;
-    }
-    if(isEditRow && row.getAttribute('data-ssl-form-open') === '1'){
-      shouldShow = true;
-    }
-    if(shouldShow){
-      row.hidden = false;
-      row.removeAttribute('hidden');
-      row.style.display = 'table-row';
-    } else {
-      row.hidden = true;
-      row.style.display = 'none';
-    }
-  });
   document.querySelectorAll('[data-ssl-page-size]').forEach(function(select){
     select.addEventListener('change',function(){
       var form = select.closest('form');
@@ -1388,8 +1373,7 @@ window.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('[data-ssl-group-parent]').forEach(function(row){
     var btn = row.querySelector('[data-ssl-group-toggle]');
     if(btn){
-      btn.setAttribute('aria-expanded','false');
-      btn.textContent = '+';
+      sslGroupSetState(btn, false);
     }
   });
   document.querySelectorAll('[data-ssl-expand-all]').forEach(function(btn){
@@ -1463,7 +1447,21 @@ JS;
         ];
     }
     private function days_left($ts){ if(!$ts) return null; $now=current_time('timestamp'); return (int)floor(($ts-$now)/DAY_IN_SECONDS); }
-    private function badge_class($d){ if($d===null) return ''; if($d>90) return 'ssl-green'; if($d>30) return 'ssl-yellow'; return 'ssl-red'; }
+    private function badge_class($d, $follow_up = false){
+        if($d === null){
+            return '';
+        }
+        if($follow_up){
+            return ($d <= 14) ? 'ssl-red' : 'ssl-green';
+        }
+        if($d > 90){
+            return 'ssl-green';
+        }
+        if($d > 30){
+            return 'ssl-yellow';
+        }
+        return 'ssl-red';
+    }
     private function fmt_date($ts){ return $ts ? date_i18n('d-m-Y', $ts) : ''; }
     private function parse_user_date($value){
         $value = trim((string)$value);
@@ -2345,6 +2343,7 @@ JS;
         ]);
         $rows = $table_data['rows'];
         $total_found = $table_data['total'];
+        $total_with_expiry = isset($table_data['total_with_expiry']) ? (int)$table_data['total_with_expiry'] : 0;
         $total_pages = max(1, (int)ceil($total_found / $requested_per_page));
         $is_create_hidden = empty($_GET['ssl_new']);
         $create_attr = $is_create_hidden ? ' hidden' : '';
@@ -2429,6 +2428,7 @@ JS;
               ."    <label>אתר (URL)<input type='url' name='site_url' placeholder='https://example.com' data-ssl-create-site><span class='ssl-form-warning' data-ssl-warning-site hidden></span></label>"
               ."    <label>תאריך תפוגה (DD-MM-YYYY) <input type='text' name='expiry_date' placeholder='31-12-2026'></label>"
               ."    <label>ליקוט <select name='source'><option value='auto' selected>Auto</option><option value='manual'>Manual</option><option value='agent'>Agent</option></select></label>"
+              ."    <label class='ssl-form-toggle'><input type='checkbox' name='follow_up' value='1'> מעקב</label>"
               ."    <label>סוג תעודה <select name='cert_type' data-ssl-create-type>".$cert_type_options_default."</select></label>"
               ."    <label>CN של התעודה<input type='text' name='cert_cn' placeholder='*.example.com' data-ssl-create-cn><span class='ssl-form-warning' data-ssl-warning-cn hidden></span></label>"
               ."    <label class='ssl-form-full'>הערות<textarea name='notes' rows='2'></textarea></label>"
@@ -2515,7 +2515,9 @@ JS;
             ['key' => 'site_url', 'label' => 'אתר', 'sortable' => true],
             ['key' => 'common_name', 'label' => 'CN', 'sortable' => true],
             ['key' => 'expiry_ts', 'label' => 'תאריך תפוגה', 'sortable' => true],
+            ['key' => 'follow_up', 'label' => 'מעקב', 'sortable' => false],
             ['key' => 'days', 'label' => 'ימים', 'sortable' => false],
+            ['key' => 'color', 'label' => 'צבע', 'sortable' => false],
         ];
         $column_count = count($header_columns);
         $bulk_form_id = 'ssl-bulk-form-'.substr(md5(serialize($preserved_query).'-'.$current_page.'-'.count($rows)), 0, 8);
@@ -2589,7 +2591,7 @@ JS;
                         }
                     }
                     $group_days = $group_expiry > 0 ? $this->days_left($group_expiry) : null;
-                    $group_badge = $this->badge_class($group_days);
+                    $group_badge = $this->badge_class($group_days, false);
                     $group_days_txt = $group_days === null ? '' : $group_days;
                     $group_badge_html = ($group_badge === '' && $group_days_txt === '') ? '' : "<span class='ssl-badge {$group_badge}'>".esc_html($group_days_txt)."</span>";
                     $toggle_label = sprintf('%s רשומות', number_format_i18n($total_in_group));
@@ -2608,7 +2610,9 @@ JS;
                     echo "<td></td>";
                     echo "<td>".esc_html($group_cn)."</td>";
                     echo "<td>".$this->fmt_date($group_expiry)."</td>";
+                    echo "<td class='ssl-follow-up-cell'><span class='ssl-group-placeholder'>&mdash;</span></td>";
                     echo "<td>{$group_badge_html}</td>";
+                    echo "<td class='ssl-color-cell'><span class='ssl-group-placeholder'>&mdash;</span></td>";
                     echo "</tr>";
                 }
                 foreach($group_rows as $row_index => $row){
@@ -2626,13 +2630,17 @@ JS;
                     if($cert_type_key === '' && $default_cert_type !== ''){
                         $cert_type_key = $default_cert_type;
                     }
-                    $type_badge_html = $cert_type_key ? $this->render_cert_type_badge($cert_type_key) : '';
                     $cert_type_label = '';
                     if($cert_type_key && isset($cert_type_map[$cert_type_key])){
                         $cert_type_label = $cert_type_map[$cert_type_key]['label'] ?? $cert_type_key;
                     }
+                    $type_color = '';
+                    if($cert_type_key && isset($cert_type_map[$cert_type_key]['color'])){
+                        $type_color = $this->sanitize_cert_type_color($cert_type_map[$cert_type_key]['color']);
+                    }
+                    $follow_up = !empty($row['follow_up']);
                     $days = $this->days_left($expiry);
-                    $badge = $this->badge_class($days);
+                    $badge = $this->badge_class($days, $follow_up);
                     $days_txt = $days === null ? '' : $days;
                     $badge_html = ($badge === '' && $days_txt === '') ? '' : "<span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span>";
                     if($src === 'agent'){
@@ -2642,35 +2650,33 @@ JS;
                     } else {
                         $src_label = 'Manual';
                     }
-                    $row_attrs = '';
+                    $row_attributes = [];
                     if($is_cn_group){
-                        $row_attrs = " data-ssl-group-child='".esc_attr($group_id)."' hidden";
+                        $row_attributes[] = "data-ssl-group-child='".esc_attr($group_id)."'";
+                        $row_attributes[] = 'hidden';
                     }
-                    echo "<tr{$row_attrs}>";
+                    $updated_at = isset($row['updated_at']) ? strtotime($row['updated_at']) : 0;
+                    $should_flag_stale = ($expiry === 0 && $updated_at && (current_time('timestamp') - $updated_at) > 2 * DAY_IN_SECONDS);
+                    if($should_flag_stale){
+                        $row_attributes[] = "class='ssl-row--stale'";
+                    }
+                    $row_attr_string = $row_attributes ? ' '.implode(' ', $row_attributes) : '';
+                    echo "<tr{$row_attr_string}>";
                     echo "<td class='ssl-select-cell'><input type='checkbox' name='post_ids[]' value='".esc_attr($id)."' data-ssl-select-item aria-label='בחר רשומה' form='".esc_attr($bulk_form_id)."'></td>";
                     $client_label = esc_html($client);
                     $cn_label = esc_html($cn);
                     $has_group = ($group_mode === 'cn' && $total_in_group > 1);
-                    $is_group_parent = $has_group && $row_index === 0;
                     $group_toggle_html = '';
                     $group_meta_html = '';
                     if($has_group && $row_index === 0){
                         $toggle_label = sprintf('סה"כ %s רשומות', number_format_i18n($total_in_group));
-                        $group_toggle_html = "<button type='button' class='ssl-btn ssl-btn-ghost ssl-group-toggle' data-ssl-group-toggle='".esc_attr($group_id)."' aria-expanded='false' aria-label='הצג רשומות בקבוצה'>+</button>"; 
+                        $group_toggle_html = "<button type='button' class='ssl-btn ssl-btn-ghost ssl-group-toggle' data-ssl-group-toggle='".esc_attr($group_id)."' aria-expanded='false' aria-label='הצג רשומות בקבוצה'>+</button>";
                         $group_meta_html = "<div class='ssl-group-meta'>".esc_html($toggle_label)."</div>";
                     }
-                    $detail_button = '';
-                    if($is_group_parent){
-                        $detail_button = "<span class='ssl-details-placeholder' aria-hidden='true'></span>";
-                    } else {
-                        $detail_button = "<button class='ssl-btn ssl-btn-ghost ssl-details-toggle' type='button' data-ssl-details='".esc_attr($id)."' aria-label='הצג פרטים'>+</button>";
-                    }
+                    $detail_button = "<button class='ssl-btn ssl-btn-ghost ssl-details-toggle' type='button' data-ssl-details='".esc_attr($id)."' aria-label='הצג פרטים'>+</button>";
                     $client_controls = "<div class='ssl-client-cell__controls'>".$group_toggle_html.$detail_button."</div>";
                     $client_text_inner = '';
-                    if($type_badge_html !== ''){
-                        $client_text_inner .= "<div class='ssl-client-cell__type'>{$type_badge_html}</div>";
-                    }
-                    if($is_group_parent){
+                    if($has_group && $row_index === 0){
                         $heading = "<div class='ssl-group-heading'><span class='ssl-group-heading__client'>{$client_label}</span>";
                         if($cn_label !== ''){
                             $heading .= "<span class='ssl-group-heading__cn'>{$cn_label}</span>";
@@ -2685,25 +2691,32 @@ JS;
                     }
                     $client_text = "<div class='ssl-client-cell__text'>".$client_text_inner."</div>";
                     $client_wrapper_class = 'ssl-client-cell';
-                    if($is_group_parent){
+                    if($has_group && $row_index === 0){
                         $client_wrapper_class .= ' ssl-client-cell--group';
                     }
                     echo "<td><div class='".esc_attr($client_wrapper_class)."'>".$client_controls.$client_text."</div></td>";
-                    if($is_group_parent){
-                        $link = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
-                        $cn_cell = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
-                        $expiry_cell = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
-                        $days_cell = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
-                    } else {
-                        $link = $url ? "<a target='_blank' rel='noopener' href='".esc_url($url)."'>".esc_html($url)."</a>" : '';
-                        $cn_cell = esc_html($cn);
-                        $expiry_cell = $this->fmt_date($expiry);
-                        $days_cell = "<span class='ssl-badge {$badge}'>".esc_html($days_txt)."</span>";
+                    $link = $url ? "<a target='_blank' rel='noopener' href='".esc_url($url)."'>".esc_html($url)."</a>" : '';
+                    $cn_cell = esc_html($cn);
+                    $expiry_cell = $this->fmt_date($expiry);
+                    $days_cell = $badge_html;
+                    $follow_up_form = "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' class='ssl-follow-up-form' data-ssl-follow-up-form>"
+                        .$this->nonce_field()
+                        ."<input type='hidden' name='action' value='".esc_attr(self::TOGGLE_FOLLOW_UP_ACTION)."'>"
+                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."'>"
+                        ."<input type='hidden' name='redirect_to' value='".esc_url(add_query_arg([]))."'>"
+                        ."<label class='ssl-follow-up-toggle'><input type='checkbox' name='follow_up' value='1'".checked($follow_up, true, false)." data-ssl-follow-up-toggle></label>"
+                        ."</form>";
+                    $color_inner = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
+                    if($type_color !== ''){
+                        $label_for_color = $cert_type_label !== '' ? $cert_type_label : $cert_type_key;
+                        $color_inner = "<div class='ssl-color-cell__content'><span class='ssl-color-dot' style='--ssl-dot-color:".esc_attr($type_color)."' aria-hidden='true'></span><span class='ssl-color-cell__label'>".esc_html($label_for_color)."</span></div>";
                     }
                     echo "<td>{$link}</td>";
                     echo "<td>{$cn_cell}</td>";
                     echo "<td>{$expiry_cell}</td>";
+                    echo "<td class='ssl-follow-up-cell'>{$follow_up_form}</td>";
                     echo "<td>{$days_cell}</td>";
+                    echo "<td class='ssl-color-cell'>{$color_inner}</td>";
                     echo "</tr>";
 
                     $meta_items = [];
@@ -2773,6 +2786,7 @@ JS;
                         ."<label>אתר (URL)<input type='url' name='site_url' value='".esc_attr($url)."'></label>"
                         ."<label>תאריך תפוגה (DD-MM-YYYY) <input type='text' name='expiry_date' value='".esc_attr($this->fmt_date($expiry))."'></label>"
                         ."<label>ליקוט <select name='source'><option value='auto' ".selected($src,'auto',false).">Auto</option><option value='manual' ".selected($src,'manual',false).">Manual</option><option value='agent' ".selected($src,'agent',false).">Agent</option></select></label>"
+                        ."<label class='ssl-form-toggle'><input type='checkbox' name='follow_up' value='1'".checked($follow_up, true, false)."> מעקב</label>"
                         ."<label>סוג תעודה <select name='cert_type'>".$cert_type_options_current."</select></label>"
                         ."<label>CN של התעודה<input type='text' name='cert_cn' value='".esc_attr($cn)."'></label>"
                         ."<label class='ssl-form-full'>הערות<textarea name='notes' rows='2'>".esc_textarea($notes)."</textarea></label>"
@@ -2823,7 +2837,12 @@ JS;
                 echo "</ul></div>";
             }
         }
-        echo "<div class='ssl-note'>נמצאו " . esc_html(number_format_i18n($total_found)) . " רשומות. צבעים: ירוק &gt; 90, צהוב 31–90, אדום ≤ 30.</div>";
+        $note_counts = sprintf(
+            'נמצאו %1$s רשומות (%2$s עם תאריך תפוגה). צבעים: ירוק &gt; 90, צהוב 31–90, אדום ≤ 30. במעקב: אדום מוצג רק ב-14 הימים האחרונים.',
+            esc_html(number_format_i18n($total_found)),
+            esc_html(number_format_i18n($total_with_expiry))
+        );
+        echo "<div class='ssl-note'>".$note_counts."</div>";
         echo "<div class='ssl-footer-tools'>";
         echo "  <div class='ssl-toolbar ssl-toolbar--bottom'>";
         echo "    <div class='ssl-toolbar__group'><a class='ssl-btn ssl-btn-surface' href='{$export_url}'>ייצוא CSV</a>";
@@ -3375,6 +3394,38 @@ JS;
         exit;
     }
 
+    public function handle_toggle_follow_up(){
+        $this->check_nonce();
+        $post_id = isset($_POST['post_id']) ? (int)$_POST['post_id'] : 0;
+        $follow_up = !empty($_POST['follow_up']) ? 1 : 0;
+        $redirect = '';
+        if(isset($_POST['redirect_to'])){
+            $candidate = esc_url_raw(wp_unslash($_POST['redirect_to']));
+            if($candidate){
+                $redirect = $candidate;
+            }
+        }
+        if(!$redirect){
+            $redirect = wp_get_referer();
+        }
+        if(!$redirect){
+            $redirect = $this->resolve_main_page_url();
+        }
+        if($post_id <= 0){
+            wp_safe_redirect($redirect);
+            exit;
+        }
+        $post = get_post($post_id);
+        if(!$post || $post->post_type !== self::CPT){
+            wp_safe_redirect($redirect);
+            exit;
+        }
+        update_post_meta($post_id,'follow_up',$follow_up ? 1 : 0);
+        $this->sync_table_record($post_id, get_post_status($post_id));
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
     public function handle_save_remote_client(){
         if(!current_user_can('manage_options')){
             wp_die('אין לך הרשאה לעדכן הגדרות אלו');
@@ -3490,6 +3541,7 @@ JS;
         $notes=sanitize_textarea_field($_POST['notes'] ?? '');
         $cert_cn = sanitize_text_field($_POST['cert_cn'] ?? '');
         $agent_only = !empty($_POST['agent_only']) ? 1 : 0;
+        $follow_up = !empty($_POST['follow_up']) ? 1 : 0;
 
         $expiry_ts = $this->parse_user_date($expiry_date);
 
@@ -3503,6 +3555,7 @@ JS;
             update_post_meta($post_id,'source',$source);
             update_post_meta($post_id,'notes',$notes);
             update_post_meta($post_id,'agent_only',$agent_only);
+            update_post_meta($post_id,'follow_up',$follow_up);
             update_post_meta($post_id,'cert_cn',$cert_cn);
             update_post_meta($post_id,'cert_type',$cert_type);
 
@@ -3582,6 +3635,7 @@ JS;
                 'source' => $source,
                 'cert_type' => $cert_type,
                 'agent_only' => (bool)$agent_only,
+                'follow_up' => (bool)$follow_up,
                 'dispatched_to_agent' => $dispatched,
                 'local_fallback_used' => $fallback_used,
             ], $this->get_current_actor_context()));
@@ -3660,7 +3714,7 @@ JS;
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename='.$filename);
         $out=fopen('php://output','w');
-        fputcsv($out,['client_name','site_url','expiry_date','common_name','source','cert_type','notes','agent_only']);
+        fputcsv($out,['client_name','site_url','expiry_date','common_name','source','cert_type','notes','agent_only','follow_up']);
         global $wpdb;
         $table = $this->get_table_name();
         $rows = $wpdb->get_results("SELECT * FROM {$table} WHERE status != 'trash'", ARRAY_A);
@@ -3674,7 +3728,8 @@ JS;
             $cert_type = isset($row['cert_type']) ? $this->sanitize_cert_type_key($row['cert_type']) : '';
             $notes = $row['notes'] ?? '';
             $agent_only = !empty($row['agent_only']) ? 1 : 0;
-            fputcsv($out, [$client, $site, $expiry, $cn, $source, $cert_type, $notes, $agent_only]);
+            $follow_up = !empty($row['follow_up']) ? 1 : 0;
+            fputcsv($out, [$client, $site, $expiry, $cn, $source, $cert_type, $notes, $agent_only, $follow_up]);
             $exported++;
         }
         fclose($out);
@@ -3731,6 +3786,7 @@ JS;
                 $source = isset($row['source']) ? $this->normalize_source_value($row['source'], 'manual') : 'manual';
                 $notes = sanitize_textarea_field($row['notes'] ?? '');
                 $agent_only = !empty($row['agent_only']) ? 1 : 0;
+                $follow_up = !empty($row['follow_up']) ? 1 : 0;
                 $common_name = sanitize_text_field($row['common_name'] ?? '');
                 $cert_type = $this->sanitize_cert_type_key($row['cert_type'] ?? '', $default_cert_type);
                 if($cert_type === '' && $default_cert_type !== ''){
@@ -3756,6 +3812,7 @@ JS;
                 update_post_meta($pid,'source',$source);
                 update_post_meta($pid,'notes',$notes);
                 update_post_meta($pid,'agent_only',$agent_only);
+                update_post_meta($pid,'follow_up',$follow_up);
                 update_post_meta($pid,'cert_cn',$common_name);
                 update_post_meta($pid,'cert_type',$cert_type);
                 $this->sync_table_record($pid, get_post_status($pid));
