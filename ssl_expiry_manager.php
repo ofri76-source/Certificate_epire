@@ -747,6 +747,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-table thead th:nth-child(3),.ssl-table tbody td:nth-child(3),.ssl-table thead th:nth-child(4),.ssl-table tbody td:nth-child(4){text-align:left;}
 .ssl-table tbody td:nth-child(3),.ssl-table tbody td:nth-child(4){direction:ltr;}
 .ssl-table thead th:nth-child(5),.ssl-table tbody td:nth-child(5){text-align:left;direction:ltr;white-space:nowrap;}
+.ssl-table thead th:nth-child(7),.ssl-table tbody td:nth-child(7){text-align:left;}
 .ssl-table tbody tr:nth-child(even){background:#f8fafc;}
 .ssl-table tbody tr:hover{background:#eef2ff;}
 .ssl-table tbody tr:last-child td{border-bottom:none;}
@@ -770,9 +771,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-date-field__controls input[type=date]{flex:1 1 160px;min-width:0;}
 .ssl-date-field__controls .ssl-btn{white-space:nowrap;flex:0 0 auto;}
 .ssl-color-cell{min-width:110px;text-align:left;direction:ltr;white-space:nowrap;}
-.ssl-color-pill{display:inline-flex;align-items:center;gap:6px;padding:.15rem .55rem;border-radius:999px;background:#f1f5f9;font-weight:600;font-size:.8rem;color:#0f172a;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
-.ssl-color-pill__label{font-weight:600;color:#0f172a;font-size:.8rem;line-height:1;}
-.ssl-color-dot{width:12px;height:12px;border-radius:50%;background:var(--ssl-dot-color,#1f2937);box-shadow:0 0 0 2px rgba(255,255,255,.85),0 3px 6px rgba(15,23,42,.18);}
+.ssl-color-pill{display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;padding:.2rem .7rem;border-radius:999px;font-weight:700;font-size:.8rem;min-width:90px;background:var(--ssl-pill-color,#1e293b);color:var(--ssl-pill-text,#fff);box-shadow:0 6px 14px rgba(15,23,42,.14);}
 .ssl-row--stale td{background:#fee2e2!important;}
 .ssl-details-toggle{font-weight:700;font-size:.9rem;}
 .ssl-group-toggle{border:none;background:#e2e8f0;color:#1e3a8a;border-radius:999px;padding:.2rem .6rem;font-size:.8rem;font-weight:700;cursor:pointer;margin:0;}
@@ -789,7 +788,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details td{background:#f1f5f9;font-size:.85rem;color:#475569;}
 .ssl-row-details__wrap{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start;}
 .ssl-row-details__section{flex:1 1 220px;display:flex;flex-direction:column;gap:8px;}
-.ssl-row-details__section--actions{flex:0 0 160px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;}
+.ssl-row-details__section--actions{flex:0 0 160px;display:flex;flex-direction:column;align-items:flex-start;gap:8px;}
 .ssl-row-details__section h4{margin:0;font-size:.85rem;color:#0f172a;}
 .ssl-row-details__section--actions h4{align-self:flex-start;}
 .ssl-row-details__images{display:flex;flex-wrap:wrap;gap:8px;}
@@ -799,7 +798,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-row-details__meta-item{display:flex;align-items:center;gap:6px;font-size:.85rem;color:#334155;}
 .ssl-row-details__meta-label{font-weight:700;color:#0f172a;}
 .ssl-row-details__meta-value{direction:ltr;text-align:left;color:#1e293b;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-.ssl-row-details__actions{display:flex;flex-direction:column;gap:6px;align-items:flex-end;}
+.ssl-row-details__actions{display:flex;flex-direction:column;gap:6px;align-items:flex-start;}
 .ssl-row-details__actions .ssl-btn{width:auto;justify-content:center;min-width:0;}
 .ssl-row-details__actions form{display:flex;}
 .ssl-btn--compact{padding:.15rem .5rem;font-size:.8rem;}
@@ -2086,6 +2085,29 @@ JS;
         }
         return '#2563eb';
     }
+    private function get_cert_type_contrast_color($color){
+        $color = ltrim((string)$color, '#');
+        if(strlen($color) === 3){
+            $color = $color[0].$color[0].$color[1].$color[1].$color[2].$color[2];
+        }
+        if(strlen($color) !== 6){
+            return '#ffffff';
+        }
+        $r = hexdec(substr($color, 0, 2));
+        $g = hexdec(substr($color, 2, 2));
+        $b = hexdec(substr($color, 4, 2));
+        $components = [$r, $g, $b];
+        foreach($components as $index => $component){
+            $normalized = $component / 255;
+            if($normalized <= 0.03928){
+                $components[$index] = $normalized / 12.92;
+            } else {
+                $components[$index] = pow(($normalized + 0.055) / 1.055, 2.4);
+            }
+        }
+        $luminance = 0.2126 * $components[0] + 0.7152 * $components[1] + 0.0722 * $components[2];
+        return ($luminance > 0.6) ? '#0f172a' : '#ffffff';
+    }
     public function get_certificate_types(){
         $types = get_option(self::OPTION_CERT_TYPES, []);
         if(!is_array($types)){
@@ -2766,10 +2788,16 @@ JS;
                         $cert_type_label = $cert_type_map[$cert_type_key]['label'] ?? $cert_type_key;
                     }
                     $type_color = '';
+                    $type_text_color = '';
                     if($cert_type_key && isset($cert_type_map[$cert_type_key]['color'])){
                         $type_color = $this->sanitize_cert_type_color($cert_type_map[$cert_type_key]['color']);
+                        $type_text_color = $this->get_cert_type_contrast_color($type_color);
                     }
                     $follow_up = !empty($row['follow_up']);
+                    $follow_up_form = '';
+                    if($id > 0){
+                        $follow_up_form = $this->build_follow_up_form($id, $follow_up);
+                    }
                     $days = $this->days_left($expiry);
                     $badge = $this->badge_class($days, $follow_up);
                     $days_txt = $days === null ? '' : $days;
@@ -2818,7 +2846,11 @@ JS;
                     $color_inner = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
                     if($type_color !== ''){
                         $label_for_color = $cert_type_label !== '' ? $cert_type_label : $cert_type_key;
-                        $color_inner = "<span class='ssl-color-pill'><span class='ssl-color-dot' style='--ssl-dot-color:".esc_attr($type_color)."' aria-hidden='true'></span><span class='ssl-color-pill__label'>".esc_html($label_for_color)."</span></span>";
+                        $style = " style='--ssl-pill-color:".esc_attr($type_color)."'";
+                        if($type_text_color !== ''){
+                            $style = " style='--ssl-pill-color:".esc_attr($type_color).";--ssl-pill-text:".esc_attr($type_text_color)."'";
+                        }
+                        $color_inner = "<span class='ssl-color-pill'{$style}>".esc_html($label_for_color)."</span>";
                     }
                     echo "<td>{$link}</td>";
                     echo "<td>{$cn_cell}</td>";
@@ -2836,10 +2868,6 @@ JS;
                     $meta_items = [];
                     if($cert_type_label !== ''){
                         $meta_items[] = "<div class='ssl-row-details__meta-item'><span class='ssl-row-details__meta-label'>סוג:</span><span class='ssl-row-details__meta-value'>".esc_html($cert_type_label)."</span></div>";
-                    }
-                    if($guide_url !== ''){
-                        $guide_link = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact ssl-guide-link' target='_blank' rel='noopener' href='".esc_url($guide_url)."'>מדריך</a>";
-                        $meta_items[] = "<div class='ssl-row-details__meta-item'><span class='ssl-row-details__meta-label'>מדריך:</span><span class='ssl-row-details__meta-value'>".$guide_link."</span></div>";
                     }
                     if($follow_up_form !== ''){
                         $meta_items[] = "<div class='ssl-row-details__meta-item'><span class='ssl-row-details__meta-label'>מעקב:</span><span class='ssl-row-details__meta-value'>{$follow_up_form}</span></div>";
@@ -2875,7 +2903,11 @@ JS;
                         ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
                         ."<button class='ssl-btn ssl-btn-outline ssl-btn--compact' type='submit'>עדכון רשומה</button>"
                         ."</form>";
-                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface ssl-btn--compact' data-ssl-edit='".esc_attr($id)."'>עריכה</button>".$refresh_form."</div>";
+                    $guide_button = '';
+                    if($guide_url !== ''){
+                        $guide_button = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact ssl-guide-link' target='_blank' rel='noopener' href='".esc_url($guide_url)."'>מדריך</a>";
+                    }
+                    $actions_detail = "<div class='ssl-row-details__actions'><button type='button' class='ssl-btn ssl-btn-surface ssl-btn--compact' data-ssl-edit='".esc_attr($id)."'>עריכה</button>".$refresh_form.$guide_button."</div>";
                     $details_html = "<div class='ssl-row-details__wrap'>"
                         ."<div class='ssl-row-details__section'><h4>הגדרות</h4>{$meta_html}</div>"
                         ."<div class='ssl-row-details__section'><h4>הערות</h4><div>{$notes_html}</div></div>"
