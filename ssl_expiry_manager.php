@@ -2749,13 +2749,14 @@ JS;
                     echo "<td class='ssl-color-cell'>{$color_inner}</td>";
                     echo "</tr>";
 
-                    $follow_up_form = "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' class='ssl-follow-up-form' data-ssl-follow-up-form>"
-                        .$this->nonce_field()
-                        ."<input type='hidden' name='action' value='".esc_attr(self::TOGGLE_FOLLOW_UP_ACTION)."'>"
-                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."'>"
-                        ."<input type='hidden' name='redirect_to' value='".esc_url(add_query_arg([]))."'>"
-                        ."<label class='ssl-follow-up-toggle'><input type='checkbox' name='follow_up' value='1'".checked($follow_up, true, false)." data-ssl-follow-up-toggle></label>"
-                        ."</form>";
+                    $follow_up_form = '';
+                    $follow_up_form .= "<form method='post' action='".esc_url(admin_url('admin-post.php'))."' class='ssl-follow-up-form' data-ssl-follow-up-form>";
+                    $follow_up_form .= $this->nonce_field();
+                    $follow_up_form .= "<input type='hidden' name='action' value='".esc_attr(self::TOGGLE_FOLLOW_UP_ACTION)."'>";
+                    $follow_up_form .= "<input type='hidden' name='post_id' value='".esc_attr($id)."'>";
+                    $follow_up_form .= "<input type='hidden' name='redirect_to' value='".esc_url(add_query_arg([]))."'>";
+                    $follow_up_form .= "<label class='ssl-follow-up-toggle'><input type='checkbox' name='follow_up' value='1'".checked($follow_up, true, false)." data-ssl-follow-up-toggle></label>";
+                    $follow_up_form .= '</form>';
 
                     $meta_items = [];
                     if($cert_type_label !== ''){
