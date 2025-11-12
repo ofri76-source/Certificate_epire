@@ -2578,7 +2578,7 @@ JS;
               ."  <div class='ssl-card__body ssl-card__body--compact'>"
               ."    <label>שם הלקוח<input type='text' name='client_name' required></label>"
               ."    <label>אתר (URL)<input type='text' name='site_url' placeholder='example.com' data-ssl-create-site data-ssl-autofill-url><span class='ssl-form-warning' data-ssl-warning-site hidden></span></label>"
-              ."    <label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' data-ssl-date-input><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום בשנה הבאה</button></div></label>"
+              ."    <label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' data-ssl-date-input><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום + שנה</button></div></label>"
               ."    <label>סוג תעודה <select name='cert_type' data-ssl-create-type>".$cert_type_options_default."</select></label>"
               ."    <label>CN של התעודה<input type='text' name='cert_cn' placeholder='*.example.com' data-ssl-create-cn><span class='ssl-form-warning' data-ssl-warning-cn hidden></span></label>"
               ."    <label>ליקוט <select name='source'><option value='auto' selected>Auto</option><option value='manual'>Manual</option><option value='agent'>Agent</option></select></label>"
