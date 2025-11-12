@@ -38,11 +38,13 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_QUEUE  = 'ssl_em_task_queue';
     const OPTION_LOG    = 'ssl_em_activity_log';
     const OPTION_CERT_TYPES = 'ssl_em_cert_types';
+    const OPTION_SETTINGS = 'ssl_em_settings';
     const OPTION_SQL_SEEDED = 'ssl_em_sql_seeded';
     const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
     const SAVE_CERT_TYPES_ACTION = 'ssl_save_cert_types';
+    const SAVE_GENERAL_SETTINGS_ACTION = 'ssl_save_general_settings';
     const TOGGLE_FOLLOW_UP_ACTION = 'ssl_toggle_follow_up';
     const PAGE_MAIN_FALLBACK  = 'https://kb.macomp.co.il/?page_id=11136';
     const PAGE_TRASH_FALLBACK = 'https://kb.macomp.co.il/?page_id=11134';
@@ -83,6 +85,8 @@ class SSL_Expiry_Manager_AIO {
         add_action('admin_post_'.self::MANAGE_TOKEN_ACTION,        [$this,'handle_manage_token']);
         add_action('admin_post_nopriv_'.self::SAVE_CERT_TYPES_ACTION, [$this,'handle_save_cert_types']);
         add_action('admin_post_'.self::SAVE_CERT_TYPES_ACTION,        [$this,'handle_save_cert_types']);
+        add_action('admin_post_nopriv_'.self::SAVE_GENERAL_SETTINGS_ACTION, [$this,'handle_save_general_settings']);
+        add_action('admin_post_'.self::SAVE_GENERAL_SETTINGS_ACTION,        [$this,'handle_save_general_settings']);
         add_action('admin_post_nopriv_'.self::TOGGLE_FOLLOW_UP_ACTION, [$this,'handle_toggle_follow_up']);
         add_action('admin_post_'.self::TOGGLE_FOLLOW_UP_ACTION,        [$this,'handle_toggle_follow_up']);
         add_action('admin_post_ssl_save_remote_client',            [$this,'handle_save_remote_client']);
@@ -97,6 +101,7 @@ class SSL_Expiry_Manager_AIO {
         add_action('init', [$this,'ensure_queue_store']);
         add_action('init', [$this,'ensure_log_store']);
         add_action('init', [$this,'ensure_cert_type_store']);
+        add_action('init', [$this,'ensure_general_settings_store']);
         add_action('init', [$this,'maybe_seed_sql_table']);
 
         add_action('rest_api_init', [$this,'register_rest']);
@@ -681,7 +686,7 @@ class SSL_Expiry_Manager_AIO {
 
     public function assets() {
         $css = <<<'CSS'
-.ssl-manager{direction:rtl;font-family:"Assistant","Rubik",Arial,sans-serif;background:#fff;border-radius:16px;box-shadow:0 12px 30px rgba(15,23,42,.08);padding:24px;margin:24px auto;max-width:1200px;display:flex;flex-direction:column;gap:24px;}
+.ssl-manager{direction:rtl;font-family:"Assistant","Rubik",Arial,sans-serif;background:#fff;border-radius:16px;box-shadow:0 12px 30px rgba(15,23,42,.08);padding:24px;margin:24px 0;max-width:100%;width:100%;display:flex;flex-direction:column;gap:24px;}
 @media (max-width:768px){.ssl-manager{padding:18px;}}
 .ssl-manager__header{display:flex;flex-wrap:wrap;justify-content:space-between;gap:16px;padding-bottom:16px;border-bottom:1px solid #e2e8f0;}
 .ssl-manager__header--tokens{align-items:flex-start;}
@@ -754,10 +759,10 @@ class SSL_Expiry_Manager_AIO {
 .ssl-date-field__controls{display:flex;gap:8px;align-items:center;}
 .ssl-date-field__controls input[type=date]{flex:1 1 auto;}
 .ssl-date-field__controls .ssl-btn{white-space:nowrap;}
-.ssl-color-cell{min-width:150px;text-align:left;direction:ltr;}
-.ssl-color-cell__content{display:inline-flex;align-items:center;gap:8px;justify-content:flex-start;flex-direction:row;}
-.ssl-color-cell__label{font-weight:600;color:#0f172a;text-align:left;direction:rtl;}
-.ssl-color-dot{width:16px;height:16px;border-radius:50%;background:var(--ssl-dot-color,#1f2937);box-shadow:0 0 0 2px rgba(255,255,255,.9),0 4px 10px rgba(15,23,42,.18);}
+.ssl-color-cell{min-width:110px;text-align:left;direction:ltr;white-space:nowrap;}
+.ssl-color-pill{display:inline-flex;align-items:center;gap:6px;padding:.15rem .55rem;border-radius:999px;background:#f1f5f9;font-weight:600;font-size:.8rem;color:#0f172a;box-shadow:inset 0 1px 0 rgba(255,255,255,.6);}
+.ssl-color-pill__label{font-weight:600;color:#0f172a;font-size:.8rem;line-height:1;}
+.ssl-color-dot{width:12px;height:12px;border-radius:50%;background:var(--ssl-dot-color,#1f2937);box-shadow:0 0 0 2px rgba(255,255,255,.85),0 3px 6px rgba(15,23,42,.18);}
 .ssl-row--stale td{background:#fee2e2!important;}
 .ssl-details-toggle{font-weight:700;font-size:.9rem;}
 .ssl-group-toggle{border:none;background:#e2e8f0;color:#1e3a8a;border-radius:999px;padding:.2rem .6rem;font-size:.8rem;font-weight:700;cursor:pointer;margin:0;}
@@ -1924,6 +1929,21 @@ JS;
             update_option(self::OPTION_CERT_TYPES, $normalized, false);
         }
     }
+    public function ensure_general_settings_store(){
+        $settings = get_option(self::OPTION_SETTINGS, null);
+        if($settings === null){
+            add_option(self::OPTION_SETTINGS, $this->sanitize_general_settings([]), false);
+            return;
+        }
+        if(!is_array($settings)){
+            update_option(self::OPTION_SETTINGS, $this->sanitize_general_settings([]), false);
+            return;
+        }
+        $normalized = $this->sanitize_general_settings($settings);
+        if($normalized !== $settings){
+            update_option(self::OPTION_SETTINGS, $normalized, false);
+        }
+    }
     private function get_default_cert_types(){
         return [
             [
@@ -1997,6 +2017,33 @@ JS;
         $fallback = preg_replace('/[^a-z0-9\-]+/', '-', $fallback);
         $fallback = trim($fallback, '-');
         return sanitize_key($fallback);
+    }
+    private function sanitize_general_settings($settings){
+        $defaults = [
+            'manual_interval' => 10,
+        ];
+        $settings = wp_parse_args(is_array($settings) ? $settings : [], $defaults);
+        $interval = isset($settings['manual_interval']) ? (int)$settings['manual_interval'] : $defaults['manual_interval'];
+        if($interval < 1){
+            $interval = 1;
+        }
+        if($interval > DAY_IN_SECONDS){
+            $interval = DAY_IN_SECONDS;
+        }
+        return [
+            'manual_interval' => $interval,
+        ];
+    }
+    private function get_general_settings(){
+        $settings = get_option(self::OPTION_SETTINGS, []);
+        if(!is_array($settings)){
+            $settings = [];
+        }
+        return $this->sanitize_general_settings($settings);
+    }
+    private function get_manual_batch_interval(){
+        $settings = $this->get_general_settings();
+        return isset($settings['manual_interval']) ? (int)$settings['manual_interval'] : 10;
     }
     private function sanitize_cert_type_color($value){
         $value = (string)$value;
@@ -2739,7 +2786,7 @@ JS;
                     $color_inner = '<span class=\'ssl-group-placeholder\'>&mdash;</span>';
                     if($type_color !== ''){
                         $label_for_color = $cert_type_label !== '' ? $cert_type_label : $cert_type_key;
-                        $color_inner = "<div class='ssl-color-cell__content'><span class='ssl-color-dot' style='--ssl-dot-color:".esc_attr($type_color)."' aria-hidden='true'></span><span class='ssl-color-cell__label'>".esc_html($label_for_color)."</span></div>";
+                        $color_inner = "<span class='ssl-color-pill'><span class='ssl-color-dot' style='--ssl-dot-color:".esc_attr($type_color)."' aria-hidden='true'></span><span class='ssl-color-pill__label'>".esc_html($label_for_color)."</span></span>";
                     }
                     echo "<td>{$link}</td>";
                     echo "<td>{$cn_cell}</td>";
@@ -3006,13 +3053,17 @@ JS;
         ], $atts);
         $tokens = $this->ensure_default_token();
         $cert_types = $this->get_certificate_types();
+        $general_settings = $this->get_general_settings();
         $add_action    = esc_attr(self::ADD_TOKEN_ACTION);
         $manage_action = esc_attr(self::MANAGE_TOKEN_ACTION);
         $types_action  = esc_attr(self::SAVE_CERT_TYPES_ACTION);
+        $general_action = esc_attr(self::SAVE_GENERAL_SETTINGS_ACTION);
         $email_choices = $this->collect_token_email_choices();
         $scheduled_notice = isset($_GET['ssl_batch']) ? max(0, intval($_GET['ssl_batch'])) : 0;
         $batch_error = isset($_GET['ssl_batch_error']);
         $types_updated = isset($_GET['ssl_types']);
+        $general_updated = isset($_GET['ssl_general']);
+        $manual_interval = isset($general_settings['manual_interval']) ? max(1, (int)$general_settings['manual_interval']) : 10;
         ob_start();
         echo "<div class='ssl-manager'>";
         echo "<div class='ssl-manager__header ssl-manager__header--tokens'>";
@@ -3025,15 +3076,19 @@ JS;
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['trash_url'])."'>מעבר לסל מחזור</a>";
         echo "<a class='ssl-btn ssl-btn-outline' href='".esc_url($a['logs_url'])."'>לוג פעילות</a>";
         $batch_form_action = esc_url(admin_url('admin-post.php'));
+        $manual_interval_label = sprintf('בדוק את כל הדומיינים (מרווח %s שניות)', number_format_i18n($manual_interval));
         echo "<form class='ssl-inline-form' method='post' action='{$batch_form_action}'>".$this->nonce_field()
             ."<input type='hidden' name='action' value='".esc_attr(self::BATCH_CHECK_ACTION)."'>"
             ."<input type='hidden' name='redirect_to' value='".esc_attr($a['main_url'])."'>"
-            ."<button class='ssl-btn ssl-btn-primary' type='submit'>בדוק את כל הדומיינים (מרווח 10 שניות)</button>"
+            ."<button class='ssl-btn ssl-btn-primary' type='submit'>".esc_html($manual_interval_label)."</button>"
             ."</form>";
         echo "</div>";
         echo "</div>";
         if($types_updated){
             echo "<div class='ssl-alert ssl-alert--success'>סוגי התעודות עודכנו בהצלחה.</div>";
+        }
+        if($general_updated){
+            echo "<div class='ssl-alert ssl-alert--success'>ההגדרות נשמרו בהצלחה.</div>";
         }
         if($scheduled_notice > 0){
             $message = sprintf('תוזמנו %s בדיקות רציפות.', number_format_i18n($scheduled_notice));
@@ -3064,6 +3119,17 @@ JS;
         echo "</form>";
         echo "<template id='ssl-type-row-template'><tr data-ssl-type-row><td class='ssl-type-table__name'><input type='text' name='cert_type_label[]' required></td><td class='ssl-type-table__color'><span class='ssl-type-chip-preview' data-ssl-type-preview style='--ssl-type-color:#2563eb;'></span><input type='color' name='cert_type_color[]' value='#2563eb' data-ssl-type-color></td><td class='ssl-type-table__actions'><input type='hidden' name='cert_type_key[]' value=''><button type='button' class='ssl-btn ssl-btn-ghost' data-ssl-type-remove aria-label='הסר סוג'>מחק</button></td></tr></template>";
         echo "<div class='ssl-note'>הסוגים שנבחרו יוצגו בתווית צבעונית לצד כל רשומה בטבלה הראשית.</div>";
+        echo "</div>";
+
+        echo "<div class='ssl-card ssl-card--form ssl-card--general'>";
+        echo "<div class='ssl-card__header'><h3>הגדרות כלליות</h3></div>";
+        echo "<form class='ssl-general-form' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
+            ."<input type='hidden' name='action' value='{$general_action}'>"
+            ."<div class='ssl-card__body ssl-card__body--compact'>"
+            ."  <label><span>מרווח בין בדיקות רציפות (שניות)</span><input type='number' name='manual_interval' min='1' step='1' max='".esc_attr(DAY_IN_SECONDS)."' value='".esc_attr($manual_interval)."'></label>"
+            ."</div>"
+            ."<div class='ssl-card__footer'><button class='ssl-btn ssl-btn-primary' type='submit'>שמור הגדרות</button><span class='ssl-note'>המרווח חל על הפעולה &quot;בדוק את כל הדומיינים&quot;.</span></div>"
+            ."</form>";
         echo "</div>";
 
         echo "<div class='ssl-card ssl-card--form ssl-card--token-create'>";
@@ -3434,6 +3500,29 @@ JS;
         exit;
     }
 
+    public function handle_save_general_settings(){
+        $this->check_nonce();
+        if(!current_user_can('manage_options')){
+            wp_die('אין לך הרשאה לעדכן הגדרות אלו');
+        }
+        $current = $this->get_general_settings();
+        $posted_interval = isset($_POST['manual_interval']) ? (int)$_POST['manual_interval'] : $current['manual_interval'];
+        $merged = array_merge($current, ['manual_interval' => $posted_interval]);
+        $normalized = $this->sanitize_general_settings($merged);
+        update_option(self::OPTION_SETTINGS, $normalized, false);
+        $this->log_activity('עודכנו הגדרות כלליות', array_merge([
+            'manual_interval' => $normalized['manual_interval'],
+        ], $this->get_current_actor_context()));
+        $redirect = wp_get_referer();
+        if(!$redirect){
+            $redirect = $this->resolve_token_page_url();
+        }
+        $redirect = remove_query_arg('ssl_general', $redirect);
+        $redirect = add_query_arg('ssl_general', 1, $redirect);
+        wp_safe_redirect($redirect);
+        exit;
+    }
+
     public function handle_toggle_follow_up(){
         $this->check_nonce();
         $post_id = isset($_POST['post_id']) ? (int)$_POST['post_id'] : 0;
@@ -3503,9 +3592,12 @@ JS;
             $redirect = $this->resolve_token_page_url();
         }
         $redirect = remove_query_arg(['ssl_batch','ssl_batch_error'], $redirect);
-        $scheduled = $this->schedule_certificate_batch('manual', time() + 10, 10);
+        $interval = $this->get_manual_batch_interval();
+        $start_delay = max(1, $interval);
+        $scheduled = $this->schedule_certificate_batch('manual', time() + $start_delay, $interval);
         $this->log_activity('בוצעה בדיקת SSL יזומה לכל הדומיינים', array_merge([
             'scheduled' => $scheduled,
+            'interval' => $interval,
         ], $this->get_current_actor_context()));
         if($scheduled > 0){
             $redirect = add_query_arg('ssl_batch', $scheduled, $redirect);
