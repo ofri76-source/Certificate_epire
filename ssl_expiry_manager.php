@@ -767,11 +767,11 @@ class SSL_Expiry_Manager_AIO {
 .ssl-follow-up-toggle input{margin:0;}
 .ssl-row-details__meta-value .ssl-follow-up-form{justify-content:flex-start;}
 .ssl-date-field{display:flex;flex-direction:column;gap:6px;color:#475569;font-weight:600;font-size:.85rem;}
-.ssl-date-field__controls{display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;}
+.ssl-date-field__controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .ssl-date-field__controls input[type=date]{flex:1 1 160px;min-width:0;}
 .ssl-date-field__controls .ssl-btn{white-space:nowrap;flex:0 0 auto;}
 .ssl-color-cell{min-width:110px;text-align:left;direction:ltr;white-space:nowrap;}
-.ssl-color-pill{display:inline-flex;align-items:center;justify-content:flex-start;gap:8px;padding:.2rem .7rem;border-radius:999px;font-weight:700;font-size:.8rem;min-width:90px;background:var(--ssl-pill-color,#1e293b);color:var(--ssl-pill-text,#fff);box-shadow:0 6px 14px rgba(15,23,42,.14);}
+.ssl-color-pill{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:.2rem .7rem;border-radius:999px;font-weight:700;font-size:.8rem;min-width:90px;text-align:center;background:var(--ssl-pill-color,#1e293b);color:var(--ssl-pill-text,#fff);box-shadow:0 6px 14px rgba(15,23,42,.14);}
 .ssl-row--stale td{background:#fee2e2!important;}
 .ssl-details-toggle{font-weight:700;font-size:.9rem;}
 .ssl-group-toggle{border:none;background:#e2e8f0;color:#1e3a8a;border-radius:999px;padding:.2rem .6rem;font-size:.8rem;font-weight:700;cursor:pointer;margin:0;}
@@ -844,7 +844,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-card--form{padding:16px;gap:12px;}
 .ssl-card--form label{display:flex;flex-direction:column;gap:4px;color:#475569;font-weight:600;font-size:.85rem;}
 .ssl-form-toggle{flex-direction:row;align-items:center;gap:8px;}
-.ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.45rem .65rem;background:#f8fafc;color:#1f2937;font-size:.9rem;}
+.ssl-card--form input[type=text],.ssl-card--form input[type=url],.ssl-card--form input[type=file],.ssl-card--form textarea,.ssl-card--form select{border:1px solid #d0d5dd;border-radius:10px;padding:.25rem .5rem;background:#f8fafc;color:#1f2937;font-size:.9rem;}
 .ssl-card--form textarea{min-height:80px;resize:vertical;}
 .ssl-card--form input[type=file]{padding:.45rem;}
 .ssl-card--form input[type=checkbox]{margin-left:6px;transform:scale(1.1);}
@@ -2146,6 +2146,9 @@ JS;
             $label = isset($type['label']) && $type['label'] !== '' ? $type['label'] : $key;
             $options .= "<option value='".esc_attr($key)."'".selected($selected, $key, false).">".esc_html($label)."</option>";
         }
+        if($options === ''){
+            $options = "<option value='' selected>אין סוגים זמינים</option>";
+        }
         return $options;
     }
     private function render_cert_type_badge($slug){
@@ -2578,8 +2581,8 @@ JS;
               ."  <div class='ssl-card__body ssl-card__body--compact'>"
               ."    <label>שם הלקוח<input type='text' name='client_name' required></label>"
               ."    <label>אתר (URL)<input type='text' name='site_url' placeholder='example.com' data-ssl-create-site data-ssl-autofill-url><span class='ssl-form-warning' data-ssl-warning-site hidden></span></label>"
-              ."    <label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' data-ssl-date-input><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום + שנה</button></div></label>"
-              ."    <label>סוג תעודה <select name='cert_type' data-ssl-create-type>".$cert_type_options_default."</select></label>"
+              ."    <label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' data-ssl-date-input><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום בשנה הבאה</button></div></label>"
+              ."    <label><span>סוג</span><select name='cert_type' data-ssl-create-type>".$cert_type_options_default."</select></label>"
               ."    <label>CN של התעודה<input type='text' name='cert_cn' placeholder='*.example.com' data-ssl-create-cn><span class='ssl-form-warning' data-ssl-warning-cn hidden></span></label>"
               ."    <label>ליקוט <select name='source'><option value='auto' selected>Auto</option><option value='manual'>Manual</option><option value='agent'>Agent</option></select></label>"
               ."    <label>קישור למדריך<input type='text' name='guide_url' placeholder='https://help.example.com' data-ssl-autofill-url></label>"
@@ -2935,7 +2938,7 @@ JS;
                         ."<label>שם הלקוח<input type='text' name='client_name' value='".esc_attr($client)."'></label>"
                         ."<label>אתר (URL)<input type='text' name='site_url' value='".esc_attr($url)."' data-ssl-autofill-url></label>"
                         ."<label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' value='".esc_attr($this->fmt_date_input($expiry))."' data-ssl-date-input><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום בשנה הבאה</button></div></label>"
-                        ."<label>סוג תעודה <select name='cert_type'>".$cert_type_options_current."</select></label>"
+                        ."<label><span>סוג</span><select name='cert_type'>".$cert_type_options_current."</select></label>"
                         ."<label>CN של התעודה<input type='text' name='cert_cn' value='".esc_attr($cn)."'></label>"
                         ."<label>ליקוט <select name='source'><option value='auto' ".selected($src,'auto',false).">Auto</option><option value='manual' ".selected($src,'manual',false).">Manual</option><option value='agent' ".selected($src,'agent',false).">Agent</option></select></label>"
                         ."<label>קישור למדריך<input type='text' name='guide_url' value='".esc_attr($guide_url)."' data-ssl-autofill-url></label>"
