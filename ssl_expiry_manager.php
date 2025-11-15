@@ -2670,6 +2670,7 @@ JS;
             ['key' => 'site_url', 'label' => 'אתר', 'sortable' => true],
             ['key' => 'common_name', 'label' => 'CN', 'sortable' => true],
             ['key' => 'expiry_ts', 'label' => 'תאריך תפוגה', 'sortable' => true],
+            ['key' => 'follow_up', 'label' => 'מעקב', 'sortable' => false],
             ['key' => 'days', 'label' => 'ימים', 'sortable' => false],
             ['key' => 'color', 'label' => 'סוג', 'sortable' => false],
         ];
@@ -2764,6 +2765,7 @@ JS;
                     echo "<td></td>";
                     echo "<td>".esc_html($group_cn)."</td>";
                     echo "<td>".$this->fmt_date($group_expiry)."</td>";
+                    echo "<td class='ssl-follow-up-cell'><span class='ssl-group-placeholder'>&mdash;</span></td>";
                     echo "<td>{$group_badge_html}</td>";
                     echo "<td class='ssl-color-cell'><span class='ssl-group-placeholder'>&mdash;</span></td>";
                     echo "</tr>";
@@ -2856,9 +2858,15 @@ JS;
                     echo "<td>{$link}</td>";
                     echo "<td>{$cn_cell}</td>";
                     echo "<td>{$expiry_cell}</td>";
+                    echo "<td class='ssl-follow-up-cell'>{$follow_up_form}</td>";
                     echo "<td>{$days_cell}</td>";
                     echo "<td class='ssl-color-cell'>{$color_inner}</td>";
                     echo "</tr>";
+
+                    $follow_up_form = '';
+                    if($id > 0){
+                        $follow_up_form = $this->build_follow_up_form($id, $follow_up);
+                    }
 
                     $meta_items = [];
                     if($cert_type_label !== ''){
