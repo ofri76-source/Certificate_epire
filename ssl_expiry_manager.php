@@ -11,8 +11,20 @@
     if (strpos($route, '/ssl-agent/v1/') === false) return $result;
 
     $hdr = $_SERVER['HTTP_X_AGENT_TOKEN'] ?? '';
-    $tok = get_option('ssl_agent_token', '');
-    if ($tok && hash_equals($tok, $hdr)) return true;
+    if(!$hdr){
+        return new WP_Error('forbidden','missing token',['status'=>403]);
+    }
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'ssl_agents';
+    $agent = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$table} WHERE token = %s LIMIT 1", $hdr), ARRAY_A);
+    if($agent){
+        $wpdb->update($table,[
+            'last_seen' => current_time('mysql', true),
+            'status'    => 'online',
+        ],['id'=>(int)$agent['id']]);
+        return ['agent'=>$agent];
+    }
 
     return new WP_Error('forbidden','bad token',['status'=>403]);
 }, 0);
@@ -42,6 +54,7 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_CERT_TYPES = 'ssl_em_cert_types';
     const OPTION_SETTINGS = 'ssl_em_settings';
     const OPTION_SQL_SEEDED = 'ssl_em_sql_seeded';
+    const TABLE_AGENTS = 'ssl_agents';
     const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
     const MANAGE_TOKEN_ACTION = 'ssl_manage_token';
@@ -57,6 +70,7 @@ class SSL_Expiry_Manager_AIO {
         add_action('init', [$this,'register_cpt']);
         add_action('init', [$this,'register_meta']);
         add_action('init', [$this,'ensure_sql_table']);
+        add_action('init', [$this,'ensure_agent_table']);
         add_shortcode('ssl_cert_table', [$this,'shortcode_table']);
         add_shortcode('ssl_trash',      [$this,'shortcode_trash']);
         add_shortcode('ssl_controls',   [$this,'shortcode_controls']);
@@ -150,6 +164,11 @@ class SSL_Expiry_Manager_AIO {
         return $wpdb->prefix . self::TABLE;
     }
 
+    private function get_agents_table_name(){
+        global $wpdb;
+        return $wpdb->prefix . self::TABLE_AGENTS;
+    }
+
     public function ensure_sql_table(){
         global $wpdb;
         $table = $this->get_table_name();
@@ -182,6 +201,27 @@ class SSL_Expiry_Manager_AIO {
             KEY issuer_name (issuer_name(190)),
             KEY site_url (site_url(190)),
             KEY cert_type (cert_type(100))
+        ) {$charset};";
+        dbDelta($sql);
+    }
+
+    public function ensure_agent_table(){
+        global $wpdb;
+        $table = $this->get_agents_table_name();
+        $charset = $wpdb->get_charset_collate();
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $sql = "CREATE TABLE {$table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            name VARCHAR(190) NOT NULL DEFAULT '',
+            token CHAR(64) NOT NULL DEFAULT '',
+            last_seen DATETIME NULL,
+            status VARCHAR(20) NOT NULL DEFAULT 'offline',
+            notes TEXT,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY token (token),
+            KEY name (name)
         ) {$charset};";
         dbDelta($sql);
     }
@@ -2247,13 +2287,15 @@ JS;
     private function get_tokens(){
         $tokens = get_option(self::OPTION_TOKEN, []);
         if(!is_array($tokens)){
-            $this->ensure_token_store();
-            $tokens = get_option(self::OPTION_TOKEN, []);
+            $tokens = [];
         }
-        return $this->normalize_tokens($tokens);
+        $tokens = $this->normalize_tokens($tokens);
+        $this->sync_tokens_to_agents($tokens);
+        return $tokens;
     }
     private function save_tokens($tokens){
         update_option(self::OPTION_TOKEN, $this->normalize_tokens($tokens));
+        $this->sync_tokens_to_agents($tokens);
     }
     private function ensure_default_token(){
         $tokens = $this->get_tokens();
@@ -2276,8 +2318,25 @@ JS;
         $this->save_tokens($default);
         return $default;
     }
+    private function sync_tokens_to_agents($tokens){
+        global $wpdb;
+        $table = $this->get_agents_table_name();
+        foreach((array)$tokens as $token){
+            if(empty($token['token'])){
+                continue;
+            }
+            $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE token = %s", $token['token']));
+            if(!$existing){
+                $wpdb->insert($table,[
+                    'name'   => $token['name'] ?? 'Agent',
+                    'token'  => $token['token'],
+                    'status' => 'unknown',
+                ]);
+            }
+        }
+    }
     private function generate_token_value(){
-        return wp_generate_password(40, false, false);
+        return bin2hex(random_bytes(16));
     }
     private function generate_token_id(){
         return 'tok_'.wp_generate_password(8, false, false);
@@ -2342,10 +2401,12 @@ JS;
     private function update_token_fields($token_id, array $changes){
         $tokens = $this->ensure_default_token();
         $updated = null;
+        $token_value = '';
         foreach($tokens as &$token){
             if($token['id'] !== $token_id){
                 continue;
             }
+            $token_value = $token['token'] ?? '';
             foreach($changes as $key => $value){
                 $token[$key] = $value;
             }
@@ -2355,6 +2416,15 @@ JS;
         unset($token);
         if($updated !== null){
             $this->save_tokens($tokens);
+            if($token_value){
+                global $wpdb;
+                $table = $this->get_agents_table_name();
+                $wpdb->update($table,[
+                    'last_seen' => isset($changes['last_seen']) ? date('Y-m-d H:i:s', (int)$changes['last_seen']) : current_time('mysql', true),
+                    'status'    => $changes['last_status'] ?? 'unknown',
+                    'notes'     => $changes['last_error'] ?? '',
+                ],['token'=>$token_value]);
+            }
         }
         return $updated;
     }
