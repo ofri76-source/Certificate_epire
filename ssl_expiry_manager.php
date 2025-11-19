@@ -37,6 +37,7 @@ class SSL_Expiry_Manager_AIO {
     const TABLE = 'ssl_em_certificates';
     const CRON_HOOK = 'ssl_expiry_manager_daily_check';
     const CRON_SINGLE_HOOK = 'ssl_expiry_manager_single_check';
+    const CRON_MONITOR_HOOK = 'ssl_expiry_manager_monitor';
     const NONCE = 'ssl_expiry_manager_nonce';
     const EXPORT_ACTION = 'ssl_expiry_export';
     const IMPORT_ACTION = 'ssl_expiry_import';
@@ -51,6 +52,7 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_REMOTE = 'ssl_em_remote_client';
     const OPTION_QUEUE  = 'ssl_em_task_queue';
     const OPTION_LOG    = 'ssl_em_activity_log';
+    const OPTION_MONITOR_STATE = 'ssl_em_monitor_state';
     const OPTION_CERT_TYPES = 'ssl_em_cert_types';
     const OPTION_SETTINGS = 'ssl_em_settings';
     const OPTION_SQL_SEEDED = 'ssl_em_sql_seeded';
@@ -114,6 +116,8 @@ class SSL_Expiry_Manager_AIO {
         add_action('wp', [$this,'ensure_cron']);
         add_action(self::CRON_HOOK, [$this,'cron_check_all']);
         add_action(self::CRON_SINGLE_HOOK, [$this,'cron_check_single'], 10, 2);
+        add_action(self::CRON_MONITOR_HOOK, [$this,'cron_monitor_connectivity']);
+        add_filter('cron_schedules', [$this,'register_custom_schedules']);
 
         add_filter('empty_trash_days', function(){ return 90; });
         add_action('init', function(){ if(!function_exists('wp_handle_upload')) require_once(ABSPATH.'wp-admin/includes/file.php'); });
@@ -150,7 +154,7 @@ class SSL_Expiry_Manager_AIO {
         $fields = [
             'client_name'=>'string','site_url'=>'string','expiry_ts'=>'integer','source'=>'string',
             'notes'=>'string','images'=>'array','last_error'=>'string','expiry_ts_checked_at'=>'integer',
-            'follow_up'=>'boolean','cert_cn'=>'string','cert_ca'=>'string','cert_type'=>'string','manual_mode'=>'boolean'
+            'follow_up'=>'boolean','cert_cn'=>'string','cert_ca'=>'string','cert_type'=>'string','manual_mode'=>'boolean','allow_duplicate_site'=>'boolean'
         ];
         foreach ($fields as $k=>$t){
             register_post_meta(self::CPT,$k,[
@@ -188,6 +192,7 @@ class SSL_Expiry_Manager_AIO {
             notes LONGTEXT,
             guide_url TEXT,
             manual_mode TINYINT(1) NOT NULL DEFAULT 0,
+            allow_duplicate_site TINYINT(1) NOT NULL DEFAULT 0,
             follow_up TINYINT(1) NOT NULL DEFAULT 0,
             last_error LONGTEXT,
             expiry_ts_checked_at BIGINT NULL,
@@ -309,6 +314,7 @@ class SSL_Expiry_Manager_AIO {
         $notes = (string)get_post_meta($post_id,'notes',true);
         $guide_url = (string)get_post_meta($post_id,'guide_url',true);
         $manual_mode = (int)get_post_meta($post_id,'manual_mode',true);
+        $allow_duplicate_site = (int)get_post_meta($post_id,'allow_duplicate_site',true);
         $follow_up = (int)get_post_meta($post_id,'follow_up',true);
         $last_error = (string)get_post_meta($post_id,'last_error',true);
         $checked = get_post_meta($post_id,'expiry_ts_checked_at',true);
@@ -345,6 +351,7 @@ class SSL_Expiry_Manager_AIO {
             'notes' => $notes,
             'guide_url' => $guide_url !== '' ? esc_url_raw($guide_url) : '',
             'manual_mode' => $manual_mode ? 1 : 0,
+            'allow_duplicate_site' => $allow_duplicate_site ? 1 : 0,
             'follow_up' => $follow_up ? 1 : 0,
             'last_error' => $last_error,
             'expiry_ts_checked_at' => $checked ? (int)$checked : null,
@@ -439,6 +446,7 @@ class SSL_Expiry_Manager_AIO {
         foreach($rows as &$row){
             $row['follow_up'] = !empty($row['follow_up']);
             $row['manual_mode'] = !empty($row['manual_mode']);
+            $row['allow_duplicate_site'] = !empty($row['allow_duplicate_site']);
             $row['images'] = $row['images'] ? json_decode($row['images'], true) : [];
             if(!is_array($row['images'])){
                 $row['images'] = [];
@@ -766,6 +774,8 @@ class SSL_Expiry_Manager_AIO {
 .ssl-status-bubble--green .ssl-status-bubble__value{color:#15803d;}
 .ssl-status-bubble--grey{background:#f1f5f9;border-color:#e2e8f0;}
 .ssl-status-bubble--grey .ssl-status-bubble__value{color:#475569;}
+.ssl-total-row{margin:0 0 8px 0;padding:10px 14px;border-radius:12px;background:#eef2ff;color:#0f172a;font-weight:600;border:1px solid #cbd5f5;display:flex;justify-content:flex-start;gap:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.65);}
+.ssl-total-row strong{font-size:1.05rem;}
 .ssl-alert{margin:12px 0;padding:.65rem 1rem;border-radius:10px;font-size:.9rem;font-weight:600;}
 .ssl-alert--success{background:#dcfce7;color:#065f46;}
 .ssl-alert--warning{background:#fef3c7;color:#92400e;}
@@ -801,6 +811,9 @@ class SSL_Expiry_Manager_AIO {
 .ssl-btn-outline:hover{background:#f8fafc;}
 .ssl-btn-ghost{background:transparent;border:none;color:#475569;padding:0 .6rem;}
 .ssl-btn-danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#fff;box-shadow:0 8px 16px rgba(239,68,68,.24);}
+.ssl-table-scroll{max-height:420px;overflow-y:auto;position:relative;border-radius:16px;border:1px solid #e2e8f0;}
+.ssl-table-scroll .ssl-table{border-radius:0;box-shadow:none;}
+.ssl-table-scroll .ssl-table thead th{position:sticky;top:0;z-index:2;}
 .ssl-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 14px 28px rgba(15,23,42,.05);}
 .ssl-table thead th{background:#f1f5f9;color:#0f172a;padding:14px 12px;text-align:right;font-size:.95rem;font-weight:700;border-bottom:1px solid #e2e8f0;}
 .ssl-table tbody td{padding:14px 12px;border-bottom:1px solid #e2e8f0;vertical-align:middle;color:#1e293b;font-size:.95rem;text-align:right;}
@@ -903,6 +916,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-form-warning{display:block;color:#b91c1c;font-size:.8rem;margin-top:4px;}
 .ssl-checkbox--inline{display:inline-flex;align-items:center;gap:6px;font-weight:600;white-space:nowrap;}
 .ssl-checkbox--inline input{margin:0;}
+.ssl-checkbox--sub{margin-top:4px;font-weight:500;font-size:.85rem;color:#334155;}
 .ssl-input-error{border-color:#ef4444!important;box-shadow:0 0 0 2px rgba(239,68,68,.2);}
 .ssl-inline-delete,.ssl-inline-refresh{display:inline-flex;margin:0;}
 .ssl-inline-delete button,.ssl-inline-refresh button{min-width:0;}
@@ -958,11 +972,12 @@ class SSL_Expiry_Manager_AIO {
 .ssl-log-level--info{background:#e0f2fe;color:#0369a1;}
 .ssl-log-level--warning{background:#fef3c7;color:#92400e;}
 .ssl-log-level--error{background:#fee2e2;color:#b91c1c;}
-.ssl-log-table__message{max-width:320px;white-space:normal;}
-.ssl-log-table__context{min-width:260px;white-space:normal;}
-.ssl-log-context{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;}
-.ssl-log-context__key{font-weight:700;color:#0f172a;margin-left:6px;}
-.ssl-log-context__value{direction:ltr;font-family:"Fira Code","Source Code Pro",monospace;font-size:.82rem;color:#1e293b;word-break:break-all;}
+.ssl-log-table__message{max-width:360px;white-space:normal;font-weight:600;color:#0f172a;}
+.ssl-log-table__context{min-width:300px;white-space:normal;}
+.ssl-log-context{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;}
+.ssl-log-context__item{display:flex;align-items:center;gap:6px;padding:6px 8px;border-radius:10px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 4px 10px rgba(15,23,42,.04);}
+.ssl-log-context__key{font-weight:700;color:#0f172a;margin-left:6px;white-space:nowrap;}
+.ssl-log-context__value{direction:ltr;font-family:"Fira Code","Source Code Pro",monospace;font-size:.88rem;color:#334155;word-break:break-word;}
 .ssl-log-context__empty{color:#94a3b8;font-style:italic;}
 .ssl-token-note{margin-top:12px;}
 .ssl-card--types .ssl-card__header{display:flex;justify-content:space-between;align-items:center;gap:12px;}
@@ -1587,6 +1602,24 @@ JS;
             'cns' => array_keys($cns),
         ];
     }
+    private function site_identifier_exists($normalized_site, $exclude_post_id = 0){
+        if($normalized_site === ''){
+            return 0;
+        }
+        global $wpdb;
+        $table = $this->get_table_name();
+        $rows = $wpdb->get_results($wpdb->prepare("SELECT post_id, site_url, allow_duplicate_site FROM {$table} WHERE status != 'trash' AND post_id != %d", (int)$exclude_post_id), ARRAY_A);
+        foreach((array)$rows as $row){
+            if(!empty($row['allow_duplicate_site'])){
+                continue;
+            }
+            $candidate = $this->normalize_site_identifier($row['site_url'] ?? '');
+            if($candidate !== '' && $candidate === $normalized_site){
+                return isset($row['post_id']) ? (int)$row['post_id'] : 0;
+            }
+        }
+        return 0;
+    }
     private function days_left($ts){ if(!$ts) return null; $now=current_time('timestamp'); return (int)floor(($ts-$now)/DAY_IN_SECONDS); }
     private function badge_class($d, $follow_up = false){
         if($d === null){
@@ -1681,7 +1714,7 @@ JS;
             if(!is_scalar($value)){
                 $value = '';
             }
-            $items[] = '<li><span class="ssl-log-context__key">'.esc_html((string)$label).'</span><span class="ssl-log-context__value">'.esc_html((string)$value).'</span></li>';
+            $items[] = '<li class="ssl-log-context__item"><span class="ssl-log-context__key">'.esc_html((string)$label).'</span><span class="ssl-log-context__value">'.esc_html((string)$value).'</span></li>';
         }
         if(empty($items)){
             return '<span class="ssl-log-context__empty"></span>';
@@ -1714,6 +1747,12 @@ JS;
     }
     private function log_activity($message, array $context = [], $level = 'info'){
         $level = in_array($level, ['info','warning','error'], true) ? $level : 'info';
+        if(!isset($context['gateway'])){
+            $gateway = $this->get_default_gateway_label();
+            if($gateway !== ''){
+                $context['gateway'] = $gateway;
+            }
+        }
         $entry = [
             'time'    => time(),
             'level'   => $level,
@@ -2136,6 +2175,8 @@ JS;
     private function sanitize_general_settings($settings){
         $defaults = [
             'manual_interval' => 10,
+            'default_gateway' => '',
+            'monitor_email' => '',
         ];
         $settings = wp_parse_args(is_array($settings) ? $settings : [], $defaults);
         $interval = isset($settings['manual_interval']) ? (int)$settings['manual_interval'] : $defaults['manual_interval'];
@@ -2145,8 +2186,12 @@ JS;
         if($interval > DAY_IN_SECONDS){
             $interval = DAY_IN_SECONDS;
         }
+        $gateway = isset($settings['default_gateway']) ? sanitize_text_field($settings['default_gateway']) : '';
+        $monitor_email = isset($settings['monitor_email']) ? sanitize_email($settings['monitor_email']) : '';
         return [
             'manual_interval' => $interval,
+            'default_gateway' => $gateway,
+            'monitor_email' => $monitor_email,
         ];
     }
     private function get_general_settings(){
@@ -2159,6 +2204,19 @@ JS;
     private function get_manual_batch_interval(){
         $settings = $this->get_general_settings();
         return isset($settings['manual_interval']) ? (int)$settings['manual_interval'] : 10;
+    }
+    private function get_default_gateway_label(){
+        $settings = $this->get_general_settings();
+        return isset($settings['default_gateway']) ? $settings['default_gateway'] : '';
+    }
+    private function get_monitor_email(){
+        $settings = $this->get_general_settings();
+        $email = isset($settings['monitor_email']) ? sanitize_email($settings['monitor_email']) : '';
+        if($email){
+            return $email;
+        }
+        $admin = sanitize_email(get_option('admin_email'));
+        return $admin ?: '';
     }
     private function sanitize_cert_type_color($value){
         $value = (string)$value;
@@ -2472,6 +2530,20 @@ JS;
         $this->update_token_fields($token['id'], ['notified_down_at' => time()]);
     }
 
+    private function has_recent_agent_contact($window_seconds = 600){
+        $cutoff = time() - absint($window_seconds);
+        foreach($this->get_tokens() as $token){
+            if(!empty($token['last_seen']) && (int)$token['last_seen'] >= $cutoff){
+                return true;
+            }
+        }
+        global $wpdb;
+        $table = $this->get_agents_table_name();
+        $cutoff_mysql = gmdate('Y-m-d H:i:s', $cutoff);
+        $count = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$table} WHERE last_seen IS NOT NULL AND last_seen >= %s", $cutoff_mysql));
+        return (int)$count > 0;
+    }
+
     private function collect_token_email_choices(){
         $choices = [];
         $admin_email = sanitize_email(get_option('admin_email'));
@@ -2586,12 +2658,13 @@ JS;
                 $preserved_query[$key] = sanitize_text_field(wp_unslash($value));
             }
         }
+        $duplicate_error = isset($preserved_query['ssl_error']) && $preserved_query['ssl_error'] === 'duplicate_site';
         $single_success_id = isset($_GET['ssl_single']) ? max(0, intval($_GET['ssl_single'])) : 0;
         $single_error_code = isset($_GET['ssl_single_error']) ? sanitize_key($_GET['ssl_single_error']) : '';
         $sort = isset($preserved_query['ssl_sort']) ? sanitize_key($preserved_query['ssl_sort']) : 'expiry_ts';
         $order = isset($preserved_query['ssl_order']) && strtolower($preserved_query['ssl_order']) === 'desc' ? 'DESC' : 'ASC';
         $search = $preserved_query['ssl_search'] ?? '';
-        unset($preserved_query['ssl_single'], $preserved_query['ssl_single_error']);
+        unset($preserved_query['ssl_single'], $preserved_query['ssl_single_error'], $preserved_query['ssl_error']);
         $group_mode = 'cn';
         $preserved_query['ssl_group'] = 'cn';
         $table_data = $this->fetch_certificates([
@@ -2697,10 +2770,14 @@ JS;
             echo "</div>";
         }
         echo "</div>";
+        echo "<div class='ssl-total-row' role='status'>סה\"כ רשומות: <strong>".esc_html(number_format_i18n($total_found))."</strong></div>";
         if($single_success_message !== ''){
             echo "<div class='ssl-alert ssl-alert--success'>".esc_html($single_success_message)."</div>";
         } elseif($single_error_message !== ''){
             echo "<div class='ssl-alert ssl-alert--warning'>".esc_html($single_error_message)."</div>";
+        }
+        if($duplicate_error){
+            echo "<div class='ssl-alert ssl-alert--warning'>כבר קיימת רשומה עם אותו אתר. סמן \"אפשר כפילות בשם האתר\" אם נדרש להוסיף בכל זאת.</div>";
         }
 
         echo "<div class='ssl-card ssl-card--form' data-ssl-create{$create_attr}>";
@@ -2710,7 +2787,7 @@ JS;
               ."  <input type='hidden' name='post_id' value='0' />"
               ."  <div class='ssl-card__body ssl-card__body--compact'>"
               ."    <label>שם הלקוח<input type='text' name='client_name' required></label>"
-              ."    <label>אתר (URL)<input type='text' name='site_url' placeholder='example.com' data-ssl-create-site data-ssl-autofill-url><span class='ssl-form-warning' data-ssl-warning-site hidden></span></label>"
+              ."    <label>אתר (URL)<input type='text' name='site_url' placeholder='example.com' data-ssl-create-site data-ssl-autofill-url><span class='ssl-form-warning' data-ssl-warning-site hidden></span><label class='ssl-checkbox ssl-checkbox--inline ssl-checkbox--sub'><input type='checkbox' name='allow_duplicate_site' value='1'> אפשר כפילות בשם האתר</label></label>"
               ."    <label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' data-ssl-date-input><label class='ssl-checkbox ssl-checkbox--inline'><input type='checkbox' name='manual_mode' value='1'> ידני (ללא בדיקות אוטומטיות)</label><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום בשנה הבאה</button></div></label>"
               ."    <label><span>סוג</span><select name='cert_type' data-ssl-create-type>".$cert_type_options_default."</select></label>"
               ."    <label>CN של התעודה<input type='text' name='cert_cn' placeholder='*.example.com' data-ssl-create-cn><span class='ssl-form-warning' data-ssl-warning-cn hidden></span></label>"
@@ -2906,6 +2983,7 @@ JS;
                     $cn = $row['common_name'];
                     $expiry = !empty($row['expiry_ts']) ? (int)$row['expiry_ts'] : 0;
                     $manual_mode_row = !empty($row['manual_mode']);
+                    $allow_duplicate_row = !empty($row['allow_duplicate_site']);
                     $src_default = $manual_mode_row ? 'manual' : 'auto';
                     $src = $this->normalize_source_value($row['source'] ?? $src_default, $src_default);
                     $notes = $row['notes'];
@@ -3070,7 +3148,7 @@ JS;
                         ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
                         ."<div class='ssl-card__body ssl-card__body--compact'>"
                         ."<label>שם הלקוח<input type='text' name='client_name' value='".esc_attr($client)."'></label>"
-                        ."<label>אתר (URL)<input type='text' name='site_url' value='".esc_attr($url)."' data-ssl-autofill-url></label>"
+                        ."<label>אתר (URL)<input type='text' name='site_url' value='".esc_attr($url)."' data-ssl-autofill-url><label class='ssl-checkbox ssl-checkbox--inline ssl-checkbox--sub'><input type='checkbox' name='allow_duplicate_site' value='1' ".checked($allow_duplicate_row,true,false)."> אפשר כפילות בשם האתר</label></label>"
                         ."<label class='ssl-date-field ssl-form-span-2'><span>תאריך תפוגה</span><div class='ssl-date-field__controls'><input type='date' name='expiry_date' value='".esc_attr($this->fmt_date_input($expiry))."' data-ssl-date-input><label class='ssl-checkbox ssl-checkbox--inline'><input type='checkbox' name='manual_mode' value='1' ".checked($manual_mode_row,true,false)."> ידני (ללא בדיקות אוטומטיות)</label><button type='button' class='ssl-btn ssl-btn-outline' data-ssl-date-next-year>היום בשנה הבאה</button></div></label>"
                         ."<label><span>סוג</span><select name='cert_type'>".$cert_type_options_current."</select></label>"
                         ."<label>CN של התעודה<input type='text' name='cert_cn' value='".esc_attr($cn)."'></label>"
@@ -3275,6 +3353,8 @@ JS;
         $types_updated = isset($_GET['ssl_types']);
         $general_updated = isset($_GET['ssl_general']);
         $manual_interval = isset($general_settings['manual_interval']) ? max(1, (int)$general_settings['manual_interval']) : 10;
+        $default_gateway_value = isset($general_settings['default_gateway']) ? sanitize_text_field($general_settings['default_gateway']) : '';
+        $monitor_email_value = isset($general_settings['monitor_email']) ? sanitize_email($general_settings['monitor_email']) : '';
         ob_start();
         echo "<div class='ssl-manager'>";
         echo "<div class='ssl-manager__header ssl-manager__header--tokens'>";
@@ -3338,8 +3418,10 @@ JS;
             ."<input type='hidden' name='action' value='{$general_action}'>"
             ."<div class='ssl-card__body ssl-card__body--compact'>"
             ."  <label><span>מרווח בין בדיקות רציפות (שניות)</span><input type='number' name='manual_interval' min='1' step='1' max='".esc_attr(DAY_IN_SECONDS)."' value='".esc_attr($manual_interval)."'></label>"
+            ."  <label><span>Default Gateway לבדיקות</span><input type='text' name='default_gateway' placeholder='10.0.0.1 / ISP' value='".esc_attr($default_gateway_value)."'></label>"
+            ."  <label><span>אימייל לניטור חיבור</span><input type='email' name='monitor_email' placeholder='alerts@example.com' value='".esc_attr($monitor_email_value)."'></label>"
             ."</div>"
-            ."<div class='ssl-card__footer'><button class='ssl-btn ssl-btn-primary' type='submit'>שמור הגדרות</button><span class='ssl-note'>המרווח חל על הפעולה &quot;בדוק את כל הדומיינים&quot;.</span></div>"
+            ."<div class='ssl-card__footer'><button class='ssl-btn ssl-btn-primary' type='submit'>שמור הגדרות</button><span class='ssl-note'>המרווח חל על הפעולה &quot;בדוק את כל הדומיינים&quot; ועל ניטור החיבור האוטומטי.</span></div>"
             ."</form>";
         echo "</div>";
 
@@ -3364,6 +3446,7 @@ JS;
         }
         echo $forms;
 
+        echo "<div class='ssl-table-scroll'>";
         echo "<table class='ssl-table ssl-token-table'>";
         echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>סטטוס חיבור</th><th>התראות</th><th>נמענים</th><th style='width:240px'>פעולות</th></tr></thead>";
         echo "<tbody>";
@@ -3455,6 +3538,7 @@ JS;
         }
         echo "</tbody>";
         echo "</table>";
+        echo "</div>";
         echo "<div class='ssl-note ssl-token-note'>הוסיפו נמענים חדשים באמצעות השדה והכפתור, והסירו כתובות בעזרת כפתור ה-X שמופיע ליד כל נמען. התראות נשלחות רק כאשר הטוקן מסומן לניטור.</div>";
         echo "</div>";
         return ob_get_clean();
@@ -3718,11 +3802,19 @@ JS;
         }
         $current = $this->get_general_settings();
         $posted_interval = isset($_POST['manual_interval']) ? (int)$_POST['manual_interval'] : $current['manual_interval'];
-        $merged = array_merge($current, ['manual_interval' => $posted_interval]);
+        $posted_gateway = isset($_POST['default_gateway']) ? sanitize_text_field(wp_unslash($_POST['default_gateway'])) : '';
+        $posted_email = isset($_POST['monitor_email']) ? sanitize_email(wp_unslash($_POST['monitor_email'])) : '';
+        $merged = array_merge($current, [
+            'manual_interval' => $posted_interval,
+            'default_gateway' => $posted_gateway,
+            'monitor_email' => $posted_email,
+        ]);
         $normalized = $this->sanitize_general_settings($merged);
         update_option(self::OPTION_SETTINGS, $normalized, false);
         $this->log_activity('עודכנו הגדרות כלליות', array_merge([
             'manual_interval' => $normalized['manual_interval'],
+            'default_gateway' => $normalized['default_gateway'],
+            'monitor_email' => $normalized['monitor_email'],
         ], $this->get_current_actor_context()));
         $redirect = wp_get_referer();
         if(!$redirect){
@@ -3889,11 +3981,27 @@ JS;
         $follow_up_posted = array_key_exists('follow_up', $_POST);
         $follow_up_value = $follow_up_posted ? (!empty($_POST['follow_up']) ? 1 : 0) : null;
         $manual_mode = !empty($_POST['manual_mode']) ? 1 : 0;
+        $allow_duplicate = !empty($_POST['allow_duplicate_site']) ? 1 : 0;
 
         $expiry_ts = $this->parse_user_date($expiry_date);
 
         if($post_id){ wp_update_post(['ID'=>$post_id,'post_title'=>$client?:'SSL Item']); }
         else { $post_id=wp_insert_post(['post_type'=>self::CPT,'post_status'=>'publish','post_title'=>$client?:'SSL Item']); }
+
+        $normalized_site = $this->normalize_site_identifier($site);
+        if($normalized_site !== '' && !$allow_duplicate){
+            $duplicate_post = $this->site_identifier_exists($normalized_site, $post_id);
+            if($duplicate_post){
+                $this->log_activity('נחסמה שמירת דומיין כפול', array_merge([
+                    'site_url' => $site,
+                    'duplicate_of' => $duplicate_post,
+                ], $this->get_current_actor_context()));
+                $redirect_target = wp_get_referer() ?: home_url('/');
+                $redirect_target = add_query_arg('ssl_error', 'duplicate_site', $redirect_target);
+                wp_safe_redirect($redirect_target);
+                exit;
+            }
+        }
 
         if($post_id && !is_wp_error($post_id)){
             if($is_new){
@@ -3905,6 +4013,7 @@ JS;
             update_post_meta($post_id,'notes',$notes);
             update_post_meta($post_id,'guide_url',$guide_url);
             update_post_meta($post_id,'manual_mode',$manual_mode);
+            update_post_meta($post_id,'allow_duplicate_site',$allow_duplicate);
             if($manual_mode){
                 $this->remove_task_from_queue($post_id);
             }
@@ -3971,6 +4080,7 @@ JS;
                 'cert_type' => $cert_type,
                 'guide_url' => $guide_url,
                 'manual_mode' => (bool)$manual_mode,
+                'allow_duplicate_site' => (bool)$allow_duplicate,
                 'follow_up' => (bool)$follow_up_value,
                 'dispatched_to_agent' => $dispatched,
                 'local_fallback_used' => $fallback_used,
@@ -4268,12 +4378,56 @@ JS;
             wp_unschedule_event($next, self::CRON_HOOK);
             wp_schedule_event($target, 'daily', self::CRON_HOOK);
         }
+        $monitor_next = wp_next_scheduled(self::CRON_MONITOR_HOOK);
+        if(!$monitor_next){
+            wp_schedule_event(time() + self::QUEUE_CLAIM_TTL, 'ssl_five_minutes', self::CRON_MONITOR_HOOK);
+        }
     }
     public function cron_check_all() {
         $scheduled = $this->schedule_certificate_batch('cron', time(), 120);
         $this->log_activity('תוזמנה בדיקת חצות לכל הדומיינים', array_merge([
             'scheduled' => $scheduled,
         ], $this->get_current_actor_context()));
+    }
+    public function cron_monitor_connectivity(){
+        $state = get_option(self::OPTION_MONITOR_STATE, []);
+        if(!is_array($state)){
+            $state = [];
+        }
+        $window = 600;
+        $has_contact = $this->has_recent_agent_contact($window);
+        $email = $this->get_monitor_email();
+        $now = time();
+        $last_status = isset($state['status']) ? $state['status'] : 'unknown';
+        $last_notice = isset($state['last_notice']) ? (int)$state['last_notice'] : 0;
+        if(!$has_contact){
+            $should_notify = ($last_status !== 'down') || (($now - $last_notice) > HOUR_IN_SECONDS);
+            if($should_notify){
+                if($email && function_exists('wp_mail')){
+                    $gateway = $this->get_default_gateway_label();
+                    $subject = sprintf('התראת חיבור סוכן SSL - %s', wp_specialchars_decode(get_bloginfo('name'), ENT_QUOTES));
+                    $body = "שלום,\n\nלא זוהתה תקשורת פעילה מול סוכן ה-SSL במהלך \"בדיקה חיה\".\nאתר: " . home_url('/') . "\nזמן: " . date_i18n('d.m.Y H:i') . "\nחלון בדיקה: " . ($window/60) . " דקות\nGateway: " . ($gateway ? $gateway : 'לא הוגדר') . "\n\nהמערכת תמשיך לנסות להתחבר אחת ל-5 דקות.";
+                    wp_mail($email, $subject, $body);
+                }
+                $this->log_activity('ניטור חיבור: לא זוהתה תקשורת מהסוכן', [
+                    'window_seconds' => $window,
+                    'monitor_email' => $email,
+                ], 'warning');
+                $state['last_notice'] = $now;
+            }
+            $state['status'] = 'down';
+            update_option(self::OPTION_MONITOR_STATE, $state, false);
+            return;
+        }
+        if($last_status === 'down'){
+            $this->log_activity('ניטור חיבור: הסוכן חזר לתקשר', [
+                'window_seconds' => $window,
+                'monitor_email' => $email,
+            ], 'info');
+        }
+        $state['status'] = 'up';
+        $state['last_notice'] = $now;
+        update_option(self::OPTION_MONITOR_STATE, $state, false);
     }
     private function next_midnight_gmt(){
         $now_local = current_time('timestamp');
@@ -4284,6 +4438,15 @@ JS;
         }
         $offset = $midnight_local - $now_local;
         return $now_gmt + $offset;
+    }
+    public function register_custom_schedules($schedules){
+        if(!isset($schedules['ssl_five_minutes'])){
+            $schedules['ssl_five_minutes'] = [
+                'interval' => 300,
+                'display'  => __('Every 5 Minutes (SSL Manager)', 'ssl-expiry-manager'),
+            ];
+        }
+        return $schedules;
     }
     private function schedule_single_check($timestamp, $post_id, $context){
         $timestamp = (int)$timestamp;
