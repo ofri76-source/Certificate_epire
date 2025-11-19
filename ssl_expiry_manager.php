@@ -48,7 +48,7 @@ class SSL_Expiry_Manager_AIO {
     const SAVE_CERT_TYPES_ACTION = 'ssl_save_cert_types';
     const SAVE_GENERAL_SETTINGS_ACTION = 'ssl_save_general_settings';
     const TOGGLE_FOLLOW_UP_ACTION = 'ssl_toggle_follow_up';
-    const PAGE_MAIN_FALLBACK  = 'https://kb.macomp.co.il/?page_id=11136';
+    const PAGE_MAIN_FALLBACK  = 'https://kb.macomp.co.il/?page_id=13576';
     const PAGE_TRASH_FALLBACK = 'https://kb.macomp.co.il/?page_id=11134';
     const PAGE_TOKEN_FALLBACK = 'https://kb.macomp.co.il/?page_id=11138';
     const PAGE_LOG_FALLBACK   = 'https://kb.macomp.co.il/?page_id=11141';
