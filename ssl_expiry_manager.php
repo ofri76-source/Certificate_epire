@@ -2755,6 +2755,8 @@ JS;
                     $cn = $row['common_name'];
                     $expiry = !empty($row['expiry_ts']) ? (int)$row['expiry_ts'] : 0;
                     $manual_mode_row = !empty($row['manual_mode']);
+                    $src_default = $manual_mode_row ? 'manual' : 'auto';
+                    $src = $this->normalize_source_value($row['source'] ?? $src_default, $src_default);
                     $notes = $row['notes'];
                     $err = isset($row['last_error']) ? (string)$row['last_error'] : '';
                     $imgs = $row['images'];
