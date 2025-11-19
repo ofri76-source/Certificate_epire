@@ -310,7 +310,7 @@ class SSL_Expiry_Manager_AIO {
             'expiry_ts_checked_at' => $checked ? (int)$checked : null,
             'images' => $images_json,
         ];
-        $formats = ['%d','%s','%s','%s','%s','%s','%d','%s','%s','%s','%s','%d','%d','%s','%d','%s'];
+        $formats = ['%d','%s','%s','%s','%s','%s','%d','%s','%s','%s','%s','%d','%d','%d','%s','%d','%s'];
         $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$table} WHERE post_id = %d", $post_id));
         if($existing){
             $wpdb->update($table, $data, ['post_id' => (int)$post_id], $formats, ['%d']);
