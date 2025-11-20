@@ -810,6 +810,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-btn-outline{background:transparent;border-color:#cbd5f5;color:#1f2937;}
 .ssl-btn-outline:hover{background:#f8fafc;}
 .ssl-btn-ghost{background:transparent;border:none;color:#475569;padding:0 .6rem;}
+.ssl-btn-icon{width:32px;height:32px;padding:0;border-radius:50%;font-size:1rem;line-height:1;}
 .ssl-btn-danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#fff;box-shadow:0 8px 16px rgba(239,68,68,.24);}
 .ssl-table-scroll{max-height:420px;overflow-y:auto;position:relative;border-radius:16px;border:1px solid #e2e8f0;}
 .ssl-table-scroll .ssl-table{border-radius:0;box-shadow:none;}
@@ -1521,6 +1522,17 @@ window.addEventListener('DOMContentLoaded',function(){
     var searchInput = form.querySelector('[data-ssl-filter-search]');
     if(searchInput){
       searchInput.addEventListener('input', scheduleSubmit);
+    }
+    var clearSearch = form.querySelector('[data-ssl-filter-clear]');
+    if(clearSearch && searchInput){
+      clearSearch.addEventListener('click', function(){
+        searchInput.value = '';
+        var pageInputReset = form.querySelector('input[name="ssl_page"]');
+        if(pageInputReset){
+          pageInputReset.value = '1';
+        }
+        submitForm();
+      });
     }
     form.querySelectorAll('[data-ssl-filter-select]').forEach(function(select){
       select.addEventListener('change', submitForm);
@@ -2862,6 +2874,7 @@ JS;
         echo "    <input type='hidden' name='ssl_page' value='1'>";
         echo "    <input type='hidden' name='ssl_group' value='cn'>";
         echo "    <label>חיפוש<input type='search' name='ssl_search' value='".esc_attr($search)."' placeholder='חפש לקוח, דומיין או CN' data-ssl-filter-search></label>";
+        echo "    <button type='button' class='ssl-btn ssl-btn-ghost ssl-btn-icon' data-ssl-filter-clear aria-label='נקה חיפוש'>✕</button>";
         echo "  </form>";
         echo "  <div class='ssl-toolbar__group ssl-toolbar__group--toggles'>";
         echo "    <button type='button' class='ssl-btn ssl-btn-surface' data-ssl-expand-all>הרחב הכל</button>";
