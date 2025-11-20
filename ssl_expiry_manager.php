@@ -774,7 +774,11 @@ class SSL_Expiry_Manager_AIO {
 .ssl-status-bubble--green .ssl-status-bubble__value{color:#15803d;}
 .ssl-status-bubble--grey{background:#f1f5f9;border-color:#e2e8f0;}
 .ssl-status-bubble--grey .ssl-status-bubble__value{color:#475569;}
-.ssl-total-row{margin:0 0 8px 0;padding:10px 14px;border-radius:12px;background:#eef2ff;color:#0f172a;font-weight:600;border:1px solid #cbd5f5;display:flex;justify-content:flex-start;gap:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.65);}
+.ssl-total-row{margin:0 0 8px 0;padding:10px 16px;border-radius:999px;background:linear-gradient(135deg,#e0f2fe,#d1fae5);color:#0f172a;font-weight:700;border:1px solid #bae6fd;display:inline-flex;align-items:center;gap:12px;box-shadow:0 6px 14px rgba(15,23,42,.08);}
+.ssl-total-row__segment{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;}
+.ssl-total-row__label{color:#0f172a;font-weight:700;}
+.ssl-total-row__value{color:#0b5c3d;}
+.ssl-total-row__divider{color:#94a3b8;font-weight:700;}
 .ssl-total-row strong{font-size:1.05rem;}
 .ssl-alert{margin:12px 0;padding:.65rem 1rem;border-radius:10px;font-size:.9rem;font-weight:600;}
 .ssl-alert--success{background:#dcfce7;color:#065f46;}
@@ -930,6 +934,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-card--form input[type=checkbox]{margin-left:6px;transform:scale(1.1);}
 .ssl-card--form .ssl-note{margin-top:4px;}
 .ssl-note{font-size:.85rem;color:#64748b;}
+.ssl-note--muted{color:#475569;}
 .ssl-token-create{display:flex;flex-direction:column;gap:12px;}
 .ssl-token-create__fields{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;}
 .ssl-token-create__fields label{flex:1 1 240px;margin:0;gap:4px;}
@@ -2782,7 +2787,13 @@ JS;
             echo "</div>";
         }
         echo "</div>";
-        echo "<div class='ssl-total-row' role='status'>סה\"כ רשומות: <strong>".esc_html(number_format_i18n($total_found))."</strong></div>";
+        $total_found_text = esc_html(number_format_i18n($total_found));
+        $total_with_expiry_text = esc_html(number_format_i18n($total_with_expiry));
+        echo "<div class='ssl-total-row' role='status'>";
+        echo "  <span class='ssl-total-row__segment'><span class='ssl-total-row__label'>סה\"כ רשומות</span><strong class='ssl-total-row__value'>{$total_found_text}</strong></span>";
+        echo "  <span class='ssl-total-row__divider'>|</span>";
+        echo "  <span class='ssl-total-row__segment'><span class='ssl-total-row__label'>עם תאריך</span><strong class='ssl-total-row__value'>{$total_with_expiry_text}</strong></span>";
+        echo "</div>";
         if($single_success_message !== ''){
             echo "<div class='ssl-alert ssl-alert--success'>".esc_html($single_success_message)."</div>";
         } elseif($single_error_message !== ''){
@@ -3214,12 +3225,8 @@ JS;
                 echo "</ul></div>";
             }
         }
-        $note_counts = sprintf(
-            'נמצאו %1$s רשומות (%2$s עם תאריך תפוגה). צבעים: ירוק &gt; 90, צהוב 31–90, אדום ≤ 30. במעקב: אדום מוצג רק ב-14 הימים האחרונים.',
-            esc_html(number_format_i18n($total_found)),
-            esc_html(number_format_i18n($total_with_expiry))
-        );
-        echo "<div class='ssl-note'>".$note_counts."</div>";
+        $note_counts = 'צבעים: ירוק &gt; 90, צהוב 31–90, אדום ≤ 30. במעקב: אדום מוצג רק ב-14 הימים האחרונים.';
+        echo "<div class='ssl-note ssl-note--muted'>".$note_counts."</div>";
         echo "<div class='ssl-footer-tools'>";
         echo "  <div class='ssl-toolbar ssl-toolbar--bottom'>";
         echo "    <div class='ssl-toolbar__group'><a class='ssl-btn ssl-btn-surface' href='{$export_url}'>ייצוא CSV</a>";
