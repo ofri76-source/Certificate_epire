@@ -2688,11 +2688,13 @@ JS;
             $saved = [];
         }
         $defaults = [
-            'enabled' => 0,
+            // Remote client is always considered enabled when a valid token exists.
+            'enabled' => 1,
         ];
         $settings = wp_parse_args($saved, $defaults);
         $settings = [
-            'enabled' => (int)!empty($settings['enabled']),
+            // Force-enabled to prioritize the remote agent whenever possible.
+            'enabled' => 1,
         ];
         return $settings;
     }
@@ -2700,9 +2702,6 @@ JS;
     private function remote_client_is_ready($settings = null){
         if($settings === null){
             $settings = $this->get_remote_client_settings();
-        }
-        if(empty($settings['enabled'])){
-            return false;
         }
         $primary = $this->get_primary_token();
         if(!$primary || empty($primary['token'])){
@@ -3964,9 +3963,9 @@ JS;
             wp_die('אין לך הרשאה לעדכן הגדרות אלו');
         }
         check_admin_referer('ssl_remote_client');
-        $enabled = !empty($_POST['remote_enabled']) ? 1 : 0;
         $settings = [
-            'enabled' => $enabled,
+            // Always enable the remote agent; saving simply affirms the default.
+            'enabled' => 1,
         ];
         update_option(self::OPTION_REMOTE, $settings);
         $this->log_activity('עודכנו הגדרות הסוכן המרוחק', array_merge($settings, $this->get_current_actor_context()));
@@ -4609,16 +4608,14 @@ JS;
                 if($this->is_manual_mode($post_id)){
                     continue;
                 }
-                if($remote_ready){
-                    if($this->dispatch_remote_check($post_id, $url, $context, $settings)){
-                        $scheduled++;
-                    }
-                    continue;
-                }
-                $run_at = $start + ($offset * $interval);
-                if($this->schedule_single_check($run_at, $post_id, $context)){
+                if($remote_ready && $this->dispatch_remote_check($post_id, $url, $context, $settings)){
                     $scheduled++;
-                    $offset++;
+                } else {
+                    $run_at = $start + ($offset * $interval);
+                    if($this->schedule_single_check($run_at, $post_id, $context)){
+                        $scheduled++;
+                        $offset++;
+                    }
                 }
             }
             wp_reset_postdata();
@@ -5236,15 +5233,15 @@ JS;
             echo '<hr />';
             echo '<h2>הגדרות סוכן מרוחק</h2>';
             if($remote_ready){
-                echo '<p><span style="color:#0a7a0a;font-weight:600;">הסוכן המרוחק פעיל.</span> משימות חדשות ייכנסו לתור ויאספו באמצעות השירות במשרד.</p>';
+                echo '<p><span style="color:#0a7a0a;font-weight:600;">הסוכן המרוחק פעיל תמיד כשקיים טוקן ראשי.</span> משימות חדשות ייכנסו לתור ויאספו באמצעות השירות במשרד.</p>';
             } else {
-                echo '<p><span style="color:#b91c1c;font-weight:600;">הסוכן המרוחק כבוי או לא זמין.</span> בהתאם להגדרות תתבצע בדיקה מקומית.</p>';
+                echo '<p><span style="color:#b91c1c;font-weight:600;">אין טוקן ראשי פעיל.</span> המשימות יבוצעו מקומית עד להוספת טוקן.</p>';
             }
             echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" class="ssl-remote-form">';
             wp_nonce_field('ssl_remote_client');
             echo '<input type="hidden" name="action" value="ssl_save_remote_client" />';
             echo '<table class="form-table" role="presentation"><tbody>';
-        echo '<tr><th scope="row">הפעלת הסוכן</th><td><label><input type="checkbox" name="remote_enabled" value="1" '.checked(!empty($remote['enabled']),true,false).' /> אפשר לסוכן למשוך משימות מהתור</label></td></tr>';
+            echo '<tr><th scope="row">מפתחי הסוכן</th><td><p class="description">התוסף מפנה תמיד לסוכן המרוחק כאשר קיים טוקן ראשי זמין. אין צורך להפעיל או לכבות ידנית.</p></td></tr>';
             echo '<tr><th scope="row">REST Poll</th><td><code>'.esc_html($poll_url).'</code><p class="description">השתמש בקישור זה להגדרת שירות ה-Agent (GET/POST).</p></td></tr>';
             echo '<tr><th scope="row">REST Ack</th><td><code>'.esc_html($ack_url).'</code><p class="description">קריאה אופציונלית לאישור קבלת משימות לאחר שליפה.</p></td></tr>';
             echo '<tr><th scope="row">REST Report</th><td><code>'.esc_html($report_url).'</code><p class="description">הסוכן שולח לכאן תוצאות באמצעות POST.</p></td></tr>';
