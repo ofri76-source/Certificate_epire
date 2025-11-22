@@ -3218,7 +3218,7 @@ JS;
                         'post_id'  => $id,
                         '_wpnonce' => $nonce,
                     ], admin_url('admin-post.php'));
-                    $refresh_form = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact' href='".esc_url($refresh_url)."'>עדכון רשומה</a>";
+                    $refresh_form = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact' href='".esc_url($refresh_url)."'>בדוק עכשיו</a>";
                     $guide_button = '';
                     if($guide_url !== ''){
                         $guide_button = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact ssl-guide-link' target='_blank' rel='noopener' href='".esc_url($guide_url)."'>מדריך</a>";
@@ -4049,15 +4049,33 @@ JS;
             wp_safe_redirect($redirect);
             exit;
         }
-        $this->cron_check_single($post_id, 'manual-request');
-        update_post_meta($post_id,'expiry_ts_checked_at', time());
         $client = (string)get_post_meta($post_id,'client_name',true);
+        $settings = $this->get_remote_client_settings();
+        $remote_ready = $this->remote_client_is_ready($settings);
+        $queued = false;
+        if($remote_ready){
+            $queued = $this->dispatch_remote_check($post_id, $site, 'manual-request', $settings);
+            if(!$queued){
+                $this->log_activity('הוספת משימה לתור נכשלה', array_merge([
+                    'id' => $post_id,
+                    'client_name' => $client,
+                    'site_url' => $site,
+                    'context' => 'manual-request',
+                ], $this->get_current_actor_context()));
+            }
+        }
+        if(!$queued){
+            $this->cron_check_single($post_id, 'manual-request');
+            update_post_meta($post_id,'expiry_ts_checked_at', time());
+        }
         $this->log_activity('בקשת בדיקת SSL ידנית נשלחה', array_merge([
             'id' => $post_id,
             'client_name' => $client,
             'site_url' => $site,
             'check_name' => $post->post_title,
             'context' => 'manual-request',
+            'queued' => $queued ? 1 : 0,
+            'remote_ready' => $remote_ready ? 1 : 0,
         ], $this->get_current_actor_context()));
         $redirect = add_query_arg('ssl_single', $post_id, $redirect);
         wp_safe_redirect($redirect);
