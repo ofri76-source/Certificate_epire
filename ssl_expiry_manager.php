@@ -56,6 +56,7 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_CERT_TYPES = 'ssl_em_cert_types';
     const OPTION_SETTINGS = 'ssl_em_settings';
     const OPTION_SQL_SEEDED = 'ssl_em_sql_seeded';
+    const TABLE_QUEUE = 'ssl_em_task_queue';
     const TABLE_AGENTS = 'ssl_agents';
     const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
@@ -72,6 +73,7 @@ class SSL_Expiry_Manager_AIO {
         add_action('init', [$this,'register_cpt']);
         add_action('init', [$this,'register_meta']);
         add_action('init', [$this,'ensure_sql_table']);
+        add_action('init', [$this,'ensure_task_queue_table']);
         add_action('init', [$this,'ensure_agent_table']);
         add_shortcode('ssl_cert_table', [$this,'shortcode_table']);
         add_shortcode('ssl_trash',      [$this,'shortcode_trash']);
@@ -168,6 +170,11 @@ class SSL_Expiry_Manager_AIO {
         return $wpdb->prefix . self::TABLE;
     }
 
+    private function get_queue_table_name(){
+        global $wpdb;
+        return $wpdb->prefix . self::TABLE_QUEUE;
+    }
+
     private function get_agents_table_name(){
         global $wpdb;
         return $wpdb->prefix . self::TABLE_AGENTS;
@@ -208,6 +215,40 @@ class SSL_Expiry_Manager_AIO {
             KEY cert_type (cert_type(100))
         ) {$charset};";
         dbDelta($sql);
+    }
+
+    public function ensure_task_queue_table(){
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        $charset = $wpdb->get_charset_collate();
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $sql = "CREATE TABLE {$table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            post_id BIGINT UNSIGNED NOT NULL,
+            site_url TEXT NOT NULL,
+            client_name VARCHAR(255) NOT NULL DEFAULT '',
+            context VARCHAR(50) NOT NULL DEFAULT 'manual',
+            enqueued_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            request_id VARCHAR(100) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'queued',
+            claimed_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            attempts INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (id),
+            UNIQUE KEY post_id (post_id),
+            KEY status_claimed (status, claimed_at),
+            KEY request_id (request_id),
+            KEY enqueued_at (enqueued_at)
+        ) {$charset};";
+        dbDelta($sql);
+
+        if($this->queue_table_exists()){
+            $count = (int)$wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+            if($count === 0){
+                $existing = get_option(self::OPTION_QUEUE, []);
+                [$normalized, ] = $this->normalize_queue_items($existing);
+                $this->replace_queue_rows($normalized);
+            }
+        }
     }
 
     public function ensure_agent_table(){
@@ -813,6 +854,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-btn-icon{width:32px;height:32px;padding:0;border-radius:50%;font-size:1rem;line-height:1;}
 .ssl-btn-danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#fff;box-shadow:0 8px 16px rgba(239,68,68,.24);}
 .ssl-table-scroll{max-height:420px;overflow-y:auto;position:relative;border-radius:16px;border:1px solid #e2e8f0;}
+.ssl-table-scroll--tokens{max-height:none;overflow:visible;}
 .ssl-table-scroll .ssl-table{border-radius:0;box-shadow:none;}
 .ssl-table-scroll .ssl-table thead th{position:sticky;top:0;z-index:2;}
 .ssl-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 14px 28px rgba(15,23,42,.05);}
@@ -1778,6 +1820,34 @@ JS;
         }
         update_option(self::OPTION_LOG, $log, false);
     }
+    private function queue_table_exists(){
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        return $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table)) === $table;
+    }
+
+    private function replace_queue_rows($queue){
+        if(!$this->queue_table_exists()){
+            return;
+        }
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        $wpdb->query("DELETE FROM {$table}");
+        foreach((array)$queue as $item){
+            $wpdb->insert($table, [
+                'post_id'     => isset($item['id']) ? (int)$item['id'] : 0,
+                'site_url'    => isset($item['site_url']) ? esc_url_raw($item['site_url']) : '',
+                'client_name' => isset($item['client_name']) ? wp_strip_all_tags((string)$item['client_name']) : '',
+                'context'     => isset($item['context']) ? sanitize_key($item['context']) : 'manual',
+                'enqueued_at' => isset($item['enqueued_at']) ? (int)$item['enqueued_at'] : time(),
+                'request_id'  => isset($item['request_id']) ? sanitize_text_field($item['request_id']) : '',
+                'status'      => isset($item['status']) ? sanitize_text_field($item['status']) : 'queued',
+                'claimed_at'  => isset($item['claimed_at']) ? (int)$item['claimed_at'] : 0,
+                'attempts'    => isset($item['attempts']) ? (int)$item['attempts'] : 0,
+            ], ['%d','%s','%s','%s','%d','%s','%s','%d','%d']);
+        }
+    }
+
     private function normalize_queue_items($items){
         $normalized = [];
         $changed = false;
@@ -1816,6 +1886,18 @@ JS;
         return [$normalized, $changed];
     }
     private function get_task_queue(){
+        if($this->queue_table_exists()){
+            global $wpdb;
+            $table = $this->get_queue_table_name();
+            $rows = $wpdb->get_results("SELECT post_id AS id, site_url, client_name, context, enqueued_at, request_id, status, claimed_at, attempts FROM {$table} ORDER BY enqueued_at ASC", ARRAY_A);
+            [$normalized, $changed] = $this->normalize_queue_items($rows);
+            if($changed){
+                $this->replace_queue_rows($normalized);
+                update_option(self::OPTION_QUEUE, $normalized, false);
+            }
+            return $normalized;
+        }
+
         $queue = get_option(self::OPTION_QUEUE, []);
         if(!is_array($queue)){
             $queue = [];
@@ -1828,6 +1910,9 @@ JS;
     }
     private function save_task_queue($queue){
         [$normalized, ] = $this->normalize_queue_items($queue);
+        if($this->queue_table_exists()){
+            $this->replace_queue_rows($normalized);
+        }
         update_option(self::OPTION_QUEUE, $normalized, false);
     }
     private function release_stale_claims(&$queue){
@@ -2015,7 +2100,7 @@ JS;
             'status' => $success ? 'success' : 'failure',
             'message' => $message,
             'attempts' => $attempts,
-            'checked_at' => date_i18n('Y-m-d H:i:s'),
+            'checked_at' => date_i18n('d/m/Y H:i:s'),
         ], $extra_context, $this->get_current_actor_context());
         if(!empty($extra_context['issuer_name'])){
             update_post_meta($post_id,'cert_ca', sanitize_text_field($extra_context['issuer_name']));
@@ -3126,11 +3211,14 @@ JS;
                         $images_markup = "<div class='ssl-row-details__images'></div>";
                     }
                     $error_markup = $err !== '' ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '';
-                    $refresh_form = "<form class='ssl-inline-refresh' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
-                        ."<input type='hidden' name='action' value='".esc_attr(self::SINGLE_CHECK_ACTION)."' />"
-                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
-                        ."<button class='ssl-btn ssl-btn-outline ssl-btn--compact' type='submit'>עדכון רשומה</button>"
-                        ."</form>";
+                    $nonce_action = self::SINGLE_CHECK_ACTION . '_' . $id;
+                    $nonce = wp_create_nonce($nonce_action);
+                    $refresh_url = add_query_arg([
+                        'action'   => self::SINGLE_CHECK_ACTION,
+                        'post_id'  => $id,
+                        '_wpnonce' => $nonce,
+                    ], admin_url('admin-post.php'));
+                    $refresh_form = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact' href='".esc_url($refresh_url)."'>בדוק עכשיו</a>";
                     $guide_button = '';
                     if($guide_url !== ''){
                         $guide_button = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact ssl-guide-link' target='_blank' rel='noopener' href='".esc_url($guide_url)."'>מדריך</a>";
@@ -3443,7 +3531,7 @@ JS;
                 ."<input type='hidden' name='action' value='{$add_action}'>"
                 ."<div class='ssl-token-create__fields'>"
                 ."  <label><span>שם הטוקן</span><input type='text' name='token_name' placeholder='לדוגמה: סוכן ראשי' required></label>"
-                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>וסף טוקן</button>"
+                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>הוסף טוקן</button>"
                 ."</div>"
                 ."<p class='ssl-note'>הוסיפו טוקנים לפי הצורך והשתמשו בערך שלהם בבקשות מרוחקות.</p>"
               ."</form>";
@@ -3459,7 +3547,7 @@ JS;
         }
         echo $forms;
 
-        echo "<div class='ssl-table-scroll'>";
+        echo "<div class='ssl-table-scroll ssl-table-scroll--tokens'>";
         echo "<table class='ssl-table ssl-token-table'>";
         echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>סטטוס חיבור</th><th>התראות</th><th>נמענים</th><th style='width:240px'>פעולות</th></tr></thead>";
         echo "<tbody>";
@@ -3591,7 +3679,7 @@ JS;
         } else {
             echo "<table class='ssl-table ssl-log-table'><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>";
             foreach($log_entries as $entry){
-                $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                $time = !empty($entry['time']) ? date_i18n('d/m/Y H:i:s', (int)$entry['time']) : '';
                 $raw_level = strtolower(is_string($entry['level'] ?? '') ? $entry['level'] : '');
                 if(!in_array($raw_level, ['info','warning','error'], true)){
                     $raw_level = 'info';
@@ -3923,8 +4011,8 @@ JS;
     }
 
     public function handle_single_check() {
-        $this->check_nonce();
-        $post_id = isset($_POST['post_id']) ? (int)$_POST['post_id'] : 0;
+        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        check_admin_referer(self::SINGLE_CHECK_ACTION . '_' . $post_id);
         $redirect = '';
         if(isset($_POST['redirect_to'])){
             $candidate = esc_url_raw(wp_unslash($_POST['redirect_to']));
@@ -3961,14 +4049,33 @@ JS;
             wp_safe_redirect($redirect);
             exit;
         }
-        $this->cron_check_single($post_id, 'manual-request');
-        update_post_meta($post_id,'expiry_ts_checked_at', time());
         $client = (string)get_post_meta($post_id,'client_name',true);
+        $settings = $this->get_remote_client_settings();
+        $remote_ready = $this->remote_client_is_ready($settings);
+        $queued = false;
+        if($remote_ready){
+            $queued = $this->dispatch_remote_check($post_id, $site, 'manual-request', $settings);
+            if(!$queued){
+                $this->log_activity('הוספת משימה לתור נכשלה', array_merge([
+                    'id' => $post_id,
+                    'client_name' => $client,
+                    'site_url' => $site,
+                    'context' => 'manual-request',
+                ], $this->get_current_actor_context()));
+            }
+        }
+        if(!$queued){
+            $this->cron_check_single($post_id, 'manual-request');
+            update_post_meta($post_id,'expiry_ts_checked_at', time());
+        }
         $this->log_activity('בקשת בדיקת SSL ידנית נשלחה', array_merge([
             'id' => $post_id,
             'client_name' => $client,
             'site_url' => $site,
+            'check_name' => $post->post_title,
             'context' => 'manual-request',
+            'queued' => $queued ? 1 : 0,
+            'remote_ready' => $remote_ready ? 1 : 0,
         ], $this->get_current_actor_context()));
         $redirect = add_query_arg('ssl_single', $post_id, $redirect);
         wp_safe_redirect($redirect);
@@ -4502,6 +4609,12 @@ JS;
                 if($this->is_manual_mode($post_id)){
                     continue;
                 }
+                if($remote_ready){
+                    if($this->dispatch_remote_check($post_id, $url, $context, $settings)){
+                        $scheduled++;
+                    }
+                    continue;
+                }
                 $run_at = $start + ($offset * $interval);
                 if($this->schedule_single_check($run_at, $post_id, $context)){
                     $scheduled++;
@@ -4642,7 +4755,7 @@ JS;
         ];
     }
 
-    private function apply_certificate_details($post_id, $details, $source_label = 'agent'){
+    private function apply_certificate_details($post_id, $details, $source_label = 'agent', $checked_at = null){
         if(!$post_id || !is_array($details)){
             return false;
         }
@@ -4652,28 +4765,71 @@ JS;
             'common_name' => '',
             'issuer_name' => '',
         ];
-        if(!empty($details['expiry_ts'])){
-            $expiry_ts = (int)$details['expiry_ts'];
-            update_post_meta($post_id,'expiry_ts',$expiry_ts);
-            $result['expiry_ts'] = $expiry_ts;
+
+        $expiry_candidates = [
+            $details['expiry_ts'] ?? null,
+            $details['expiryts'] ?? null,
+            $details['expiry'] ?? null,
+            $details['not_after'] ?? null,
+        ];
+        foreach($expiry_candidates as $candidate){
+            if($candidate === null || $candidate === ''){
+                continue;
+            }
+            $parsed = is_numeric($candidate) ? (int)$candidate : strtotime((string)$candidate);
+            if($parsed && $parsed > 0){
+                update_post_meta($post_id,'expiry_ts',$parsed);
+                $result['expiry_ts'] = $parsed;
+            } else {
+                delete_post_meta($post_id,'expiry_ts');
+                $result['expiry_ts'] = null;
+            }
             $updated = true;
+            break;
         }
-        if(!empty($details['common_name'])){
-            $common_name = sanitize_text_field($details['common_name']);
-            update_post_meta($post_id,'cert_cn',$common_name);
-            $result['common_name'] = $common_name;
-            $updated = true;
+
+        $name_candidates = [
+            $details['common_name'] ?? null,
+            $details['cn'] ?? null,
+            $details['cert_cn'] ?? null,
+        ];
+        foreach($name_candidates as $candidate){
+            if($candidate === null){
+                continue;
+            }
+            $common_name = sanitize_text_field($candidate);
+            if($common_name !== ''){
+                update_post_meta($post_id,'cert_cn',$common_name);
+                $result['common_name'] = $common_name;
+                $updated = true;
+                break;
+            }
         }
-        if(!empty($details['issuer_name'])){
-            $issuer_name = sanitize_text_field($details['issuer_name']);
-            update_post_meta($post_id,'cert_ca',$issuer_name);
-            $result['issuer_name'] = $issuer_name;
-            $updated = true;
+
+        $issuer_candidates = [
+            $details['issuer_name'] ?? null,
+            $details['issuer'] ?? null,
+            $details['ca'] ?? null,
+            $details['cert_ca'] ?? null,
+        ];
+        foreach($issuer_candidates as $candidate){
+            if($candidate === null){
+                continue;
+            }
+            $issuer_name = sanitize_text_field($candidate);
+            if($issuer_name !== ''){
+                update_post_meta($post_id,'cert_ca',$issuer_name);
+                $result['issuer_name'] = $issuer_name;
+                $updated = true;
+                break;
+            }
         }
+
         if($updated){
+            $checked_value = $checked_at && is_numeric($checked_at) ? (int)$checked_at : time();
             update_post_meta($post_id,'source',$this->normalize_source_value($source_label, 'auto'));
             delete_post_meta($post_id,'last_error');
-            update_post_meta($post_id,'expiry_ts_checked_at', time());
+            update_post_meta($post_id,'expiry_ts_checked_at', $checked_value);
             $this->sync_table_record($post_id, get_post_status($post_id));
         }
         return $updated ? $result : false;
@@ -4929,7 +5085,16 @@ JS;
             $id=intval($row['id']??0); if(!$id) continue;
             $request_id = isset($row['request_id']) ? sanitize_text_field($row['request_id']) : '';
             $error_message = '';
-            $expiry_ts = !empty($row['expiry_ts']) ? intval($row['expiry_ts']) : 0;
+            $expiry_ts = 0;
+            if(isset($row['expiry_ts']) && $row['expiry_ts'] !== ''){
+                $expiry_ts = is_numeric($row['expiry_ts']) ? intval($row['expiry_ts']) : intval(strtotime((string)$row['expiry_ts']));
+            } elseif(isset($row['expiryts']) && $row['expiryts'] !== ''){
+                $expiry_ts = is_numeric($row['expiryts']) ? intval($row['expiryts']) : intval(strtotime((string)$row['expiryts']));
+            } elseif(isset($row['expiry']) && $row['expiry'] !== ''){
+                $expiry_ts = is_numeric($row['expiry']) ? intval($row['expiry']) : intval(strtotime((string)$row['expiry']));
+            } elseif(isset($row['not_after']) && $row['not_after'] !== ''){
+                $expiry_ts = is_numeric($row['not_after']) ? intval($row['not_after']) : intval(strtotime((string)$row['not_after']));
+            }
             $reported_source = $this->normalize_source_value($row['source'] ?? 'agent', 'agent');
             $reported_cn = '';
             if(!empty($row['common_name'])){
@@ -4955,9 +5120,13 @@ JS;
             if($reported_issuer !== ''){
                 $details_payload['issuer_name'] = $reported_issuer;
             }
+            $executed_at_ts = 0;
+            if(!empty($row['executed_at'])){
+                $executed_at_ts = strtotime(sanitize_text_field($row['executed_at']));
+            }
             $applied_details = [];
             if(!empty($details_payload)){
-                $applied_candidate = $this->apply_certificate_details($id, $details_payload, $reported_source ?: 'agent');
+                $applied_candidate = $this->apply_certificate_details($id, $details_payload, $reported_source ?: 'agent', $executed_at_ts ?: null);
                 if($applied_candidate){
                     $applied_details = $applied_candidate;
                 }
@@ -5098,7 +5267,7 @@ JS;
                 foreach($queue as $job){
                     $status = $job['status'] === 'claimed' ? 'בתהליך' : 'ממתין';
                     $time = !empty($job['claimed_at']) ? (int)$job['claimed_at'] : (int)$job['enqueued_at'];
-                    $time_label = $time ? date_i18n('Y-m-d H:i', $time) : '';
+                    $time_label = $time ? date_i18n('d/m/Y H:i', $time) : '';
                     echo '<tr>';
                     echo '<td>'.esc_html($job['id']).'</td>';
                     echo '<td>'.esc_html($job['client_name']).'</td>';
@@ -5120,7 +5289,7 @@ JS;
                 echo '<p>מוצגות עד 50 הרשומות האחרונות (החדשה ביותר בראש).</p>';
                 echo '<table class="widefat striped"><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>';
                 foreach($log_limit as $entry){
-                    $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                    $time = !empty($entry['time']) ? date_i18n('d/m/Y H:i:s', (int)$entry['time']) : '';
                     $level = strtoupper(esc_html($entry['level'] ?? 'info'));
                     $message = esc_html($entry['message'] ?? '');
                     $context = '';
@@ -5148,6 +5317,8 @@ JS;
             wp_insert_post(['post_title'=>'סל מחזור SSL','post_name'=>'ssl-trash','post_type'=>'page','post_status'=>'publish','post_content'=>'[ssl_trash]']);
         }
         $this->ensure_sql_table();
+        $this->ensure_task_queue_table();
+        $this->ensure_agent_table();
         $this->maybe_seed_sql_table();
     }
     public function route_export_helper(){
