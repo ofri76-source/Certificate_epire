@@ -2683,26 +2683,24 @@ JS;
     }
 
     private function get_remote_client_settings(){
+        // Always treat the agent as enabled; no UI toggle remains.
         $saved = get_option(self::OPTION_REMOTE, []);
         if(!is_array($saved)){
             $saved = [];
         }
+        // Preserve shape for future options but default to enabled.
         $defaults = [
-            // Remote client is always considered enabled when a valid token exists.
             'enabled' => 1,
         ];
         $settings = wp_parse_args($saved, $defaults);
         $settings = [
-            // Force-enabled to prioritize the remote agent whenever possible.
             'enabled' => 1,
         ];
         return $settings;
     }
 
     private function remote_client_is_ready($settings = null){
-        if($settings === null){
-            $settings = $this->get_remote_client_settings();
-        }
+        // Enabled state no longer depends on UI; only require a primary token.
         $primary = $this->get_primary_token();
         if(!$primary || empty($primary['token'])){
             return false;
