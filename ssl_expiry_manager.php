@@ -5102,7 +5102,11 @@ JS;
                 $expiry_ts = 0;
             }
             if($expiry_ts <= 0){
-                error_log('SSL Expiry Manager: agent report missing expiry for post '.$id.' payload='.print_r($row, true));
+                $non_empty_candidates = array_values(array_filter($expiry_candidates, function($candidate){
+                    return !($candidate === null || $candidate === '');
+                }));
+                $reason = empty($non_empty_candidates) ? 'missing expiry' : ('invalid expiry values: '.print_r($non_empty_candidates, true));
+                error_log('SSL Expiry Manager: agent report '.$reason.' for post '.$id.' payload='.print_r($row, true));
             }
             $reported_source = $this->normalize_source_value($row['source'] ?? 'agent', 'agent');
             $reported_cn = '';
