@@ -854,6 +854,7 @@ class SSL_Expiry_Manager_AIO {
 .ssl-btn-icon{width:32px;height:32px;padding:0;border-radius:50%;font-size:1rem;line-height:1;}
 .ssl-btn-danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#fff;box-shadow:0 8px 16px rgba(239,68,68,.24);}
 .ssl-table-scroll{max-height:420px;overflow-y:auto;position:relative;border-radius:16px;border:1px solid #e2e8f0;}
+.ssl-table-scroll--tokens{max-height:none;overflow:visible;}
 .ssl-table-scroll .ssl-table{border-radius:0;box-shadow:none;}
 .ssl-table-scroll .ssl-table thead th{position:sticky;top:0;z-index:2;}
 .ssl-table{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 14px 28px rgba(15,23,42,.05);}
@@ -3543,7 +3544,7 @@ JS;
         }
         echo $forms;
 
-        echo "<div class='ssl-table-scroll'>";
+        echo "<div class='ssl-table-scroll ssl-table-scroll--tokens'>";
         echo "<table class='ssl-table ssl-token-table'>";
         echo "<thead><tr><th>שם הטוקן</th><th>ערך הטוקן</th><th>סטטוס חיבור</th><th>התראות</th><th>נמענים</th><th style='width:240px'>פעולות</th></tr></thead>";
         echo "<tbody>";
@@ -4584,6 +4585,12 @@ JS;
                     continue;
                 }
                 if($this->is_manual_mode($post_id)){
+                    continue;
+                }
+                if($remote_ready){
+                    if($this->dispatch_remote_check($post_id, $url, $context, $settings)){
+                        $scheduled++;
+                    }
                     continue;
                 }
                 $run_at = $start + ($offset * $interval);
