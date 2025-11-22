@@ -210,7 +210,14 @@ def once():
                 raise ValueError(f"non-https port={port}")
 
             cert = _fetch_cert(host, port)
-            status = "ok" if cert.get("expiry_ts", 0) > 0 else "error"
+            expiry_ts_val = cert.get("expiry_ts") or cert.get("expiryts") or cert.get("not_after")
+            try:
+                expiry_ts_val = int(expiry_ts_val)
+            except Exception:
+                expiry_ts_val = 0
+            if expiry_ts_val < 1000000000:
+                expiry_ts_val = 0
+            status = "ok" if expiry_ts_val > 0 else "error"
 
             res = {
                 "id": tid,
@@ -226,6 +233,9 @@ def once():
                 "target_host": host,
                 "target_port": port,
                 "scheme": scheme,
+                "expiryts": expiry_ts_val,
+                "expiry_ts": expiry_ts_val,
+                "notafter": cert.get("not_after") or "",
                 **cert,
             }
             results.append(res)

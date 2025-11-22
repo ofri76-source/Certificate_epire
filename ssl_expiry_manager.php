@@ -4766,18 +4766,20 @@ JS;
             $details['expiryts'] ?? null,
             $details['expiry'] ?? null,
             $details['not_after'] ?? null,
+            $details['notafter'] ?? null,
         ];
         foreach($expiry_candidates as $candidate){
             if($candidate === null || $candidate === ''){
                 continue;
             }
             $parsed = is_numeric($candidate) ? (int)$candidate : strtotime((string)$candidate);
-            if($parsed && $parsed > 0){
+            if($parsed && $parsed > 1000000000){
                 update_post_meta($post_id,'expiry_ts',$parsed);
                 $result['expiry_ts'] = $parsed;
             } else {
                 delete_post_meta($post_id,'expiry_ts');
                 $result['expiry_ts'] = null;
+                error_log('SSL Expiry Manager: invalid expiry_ts value for post '.$post_id.' from details payload: '.print_r($details,true));
             }
             $updated = true;
             break;
@@ -5081,14 +5083,26 @@ JS;
             $request_id = isset($row['request_id']) ? sanitize_text_field($row['request_id']) : '';
             $error_message = '';
             $expiry_ts = 0;
-            if(isset($row['expiry_ts']) && $row['expiry_ts'] !== ''){
-                $expiry_ts = is_numeric($row['expiry_ts']) ? intval($row['expiry_ts']) : intval(strtotime((string)$row['expiry_ts']));
-            } elseif(isset($row['expiryts']) && $row['expiryts'] !== ''){
-                $expiry_ts = is_numeric($row['expiryts']) ? intval($row['expiryts']) : intval(strtotime((string)$row['expiryts']));
-            } elseif(isset($row['expiry']) && $row['expiry'] !== ''){
-                $expiry_ts = is_numeric($row['expiry']) ? intval($row['expiry']) : intval(strtotime((string)$row['expiry']));
-            } elseif(isset($row['not_after']) && $row['not_after'] !== ''){
-                $expiry_ts = is_numeric($row['not_after']) ? intval($row['not_after']) : intval(strtotime((string)$row['not_after']));
+            $expiry_candidates = [
+                $row['expiry_ts'] ?? null,
+                $row['expiryts'] ?? null,
+                $row['expiry_ts'] ?? null,
+                $row['expiry'] ?? null,
+                $row['not_after'] ?? null,
+                $row['notafter'] ?? null,
+            ];
+            foreach($expiry_candidates as $candidate){
+                if($candidate === null || $candidate === ''){
+                    continue;
+                }
+                $expiry_ts = is_numeric($candidate) ? intval($candidate) : intval(strtotime((string)$candidate));
+                if($expiry_ts > 1000000000){
+                    break;
+                }
+                $expiry_ts = 0;
+            }
+            if($expiry_ts <= 0){
+                error_log('SSL Expiry Manager: agent report missing expiry for post '.$id.' payload='.print_r($row, true));
             }
             $reported_source = $this->normalize_source_value($row['source'] ?? 'agent', 'agent');
             $reported_cn = '';
