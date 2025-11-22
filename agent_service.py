@@ -180,13 +180,16 @@ def once():
             log.warning("poll status=%s", r.status_code)
             return
         payload = r.json() if r.content else {}
+        if not isinstance(payload, dict):
+            log.error("poll error: payload is not a dict: %r", payload)
+            return
     except Exception as e:
         log.error("poll error: %s", e)
         return
 
     tasks = payload.get("tasks") or payload.get("jobs") or []
     if not isinstance(tasks, list):
-        log.warning("poll malformed payload: tasks is not a list")
+        log.warning("poll malformed payload, tasks is not a list: %r", tasks)
         return
     if not tasks:
         return
