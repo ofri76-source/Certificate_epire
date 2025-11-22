@@ -180,13 +180,16 @@ def once():
             log.warning("poll status=%s", r.status_code)
             return
         payload = r.json() if r.content else {}
+        if not isinstance(payload, dict):
+            log.error("poll error: payload is not a dict: %r", payload)
+            return
     except Exception as e:
         log.error("poll error: %s", e)
         return
 
     tasks = payload.get("tasks") or payload.get("jobs") or []
     if not isinstance(tasks, list):
-        log.warning("poll malformed payload: tasks is not a list")
+        log.warning("poll malformed payload, tasks is not a list: %r", tasks)
         return
     if not tasks:
         return
@@ -207,7 +210,16 @@ def once():
                 raise ValueError(f"non-https port={port}")
 
             cert = _fetch_cert(host, port)
-            status = "ok" if cert.get("expiry_ts", 0) > 0 else "error"
+            expiry_ts_val = cert.get("expiry_ts") or cert.get("expiryts") or cert.get("not_after")
+            try:
+                expiry_ts_val = int(expiry_ts_val)
+            except Exception:
+                expiry_ts_val = 0
+            if expiry_ts_val < 1000000000:
+                expiry_ts_val = 0
+            status = "ok" if expiry_ts_val > 0 else "error"
+            if status == "error":
+                log.warning("task %s missing/invalid expiry (host=%s): %r", tid, host, cert)
 
             res = {
                 "id": tid,
@@ -223,6 +235,10 @@ def once():
                 "target_host": host,
                 "target_port": port,
                 "scheme": scheme,
+                "expiryts": expiry_ts_val,
+                "expiry_ts": expiry_ts_val,
+                "expiry": expiry_ts_val,
+                "notafter": cert.get("not_after") or "",
                 **cert,
             }
             results.append(res)
@@ -261,6 +277,19 @@ def once():
     # REPORT
     try:
         report_url = _report_url(c["server_base"], tasks[0])
+        log.info(
+            "reporting %d results: %s",
+            len(results),
+            [
+                {
+                    "id": r.get("id"),
+                    "expiryts": r.get("expiryts"),
+                    "expiry": r.get("expiry"),
+                    "status": r.get("status"),
+                }
+                for r in results
+            ],
+        )
         rr = s.post(report_url, headers=hdr, json={"results": results}, timeout=30)
         if rr.status_code != 200:
             log.warning("report status=%s body=%s", rr.status_code, rr.text[:500])
