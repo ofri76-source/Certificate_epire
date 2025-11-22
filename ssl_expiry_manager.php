@@ -2100,7 +2100,7 @@ JS;
             'status' => $success ? 'success' : 'failure',
             'message' => $message,
             'attempts' => $attempts,
-            'checked_at' => date_i18n('Y-m-d H:i:s'),
+            'checked_at' => date_i18n('d/m/Y H:i:s'),
         ], $extra_context, $this->get_current_actor_context());
         if(!empty($extra_context['issuer_name'])){
             update_post_meta($post_id,'cert_ca', sanitize_text_field($extra_context['issuer_name']));
@@ -3679,7 +3679,7 @@ JS;
         } else {
             echo "<table class='ssl-table ssl-log-table'><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>";
             foreach($log_entries as $entry){
-                $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                $time = !empty($entry['time']) ? date_i18n('d/m/Y H:i:s', (int)$entry['time']) : '';
                 $raw_level = strtolower(is_string($entry['level'] ?? '') ? $entry['level'] : '');
                 if(!in_array($raw_level, ['info','warning','error'], true)){
                     $raw_level = 'info';
@@ -4056,6 +4056,7 @@ JS;
             'id' => $post_id,
             'client_name' => $client,
             'site_url' => $site,
+            'check_name' => $post->post_title,
             'context' => 'manual-request',
         ], $this->get_current_actor_context()));
         $redirect = add_query_arg('ssl_single', $post_id, $redirect);
@@ -5192,7 +5193,7 @@ JS;
                 foreach($queue as $job){
                     $status = $job['status'] === 'claimed' ? 'בתהליך' : 'ממתין';
                     $time = !empty($job['claimed_at']) ? (int)$job['claimed_at'] : (int)$job['enqueued_at'];
-                    $time_label = $time ? date_i18n('Y-m-d H:i', $time) : '';
+                    $time_label = $time ? date_i18n('d/m/Y H:i', $time) : '';
                     echo '<tr>';
                     echo '<td>'.esc_html($job['id']).'</td>';
                     echo '<td>'.esc_html($job['client_name']).'</td>';
@@ -5214,7 +5215,7 @@ JS;
                 echo '<p>מוצגות עד 50 הרשומות האחרונות (החדשה ביותר בראש).</p>';
                 echo '<table class="widefat striped"><thead><tr><th>זמן</th><th>רמה</th><th>תיאור</th><th>פרטים</th></tr></thead><tbody>';
                 foreach($log_limit as $entry){
-                    $time = !empty($entry['time']) ? date_i18n('Y-m-d H:i:s', (int)$entry['time']) : '';
+                    $time = !empty($entry['time']) ? date_i18n('d/m/Y H:i:s', (int)$entry['time']) : '';
                     $level = strtoupper(esc_html($entry['level'] ?? 'info'));
                     $message = esc_html($entry['message'] ?? '');
                     $context = '';
