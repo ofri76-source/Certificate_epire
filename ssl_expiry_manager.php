@@ -56,6 +56,7 @@ class SSL_Expiry_Manager_AIO {
     const OPTION_CERT_TYPES = 'ssl_em_cert_types';
     const OPTION_SETTINGS = 'ssl_em_settings';
     const OPTION_SQL_SEEDED = 'ssl_em_sql_seeded';
+    const TABLE_QUEUE = 'ssl_em_task_queue';
     const TABLE_AGENTS = 'ssl_agents';
     const QUEUE_CLAIM_TTL = 300; // 5 minutes
     const ADD_TOKEN_ACTION    = 'ssl_add_token';
@@ -72,6 +73,7 @@ class SSL_Expiry_Manager_AIO {
         add_action('init', [$this,'register_cpt']);
         add_action('init', [$this,'register_meta']);
         add_action('init', [$this,'ensure_sql_table']);
+        add_action('init', [$this,'ensure_task_queue_table']);
         add_action('init', [$this,'ensure_agent_table']);
         add_shortcode('ssl_cert_table', [$this,'shortcode_table']);
         add_shortcode('ssl_trash',      [$this,'shortcode_trash']);
@@ -168,6 +170,11 @@ class SSL_Expiry_Manager_AIO {
         return $wpdb->prefix . self::TABLE;
     }
 
+    private function get_queue_table_name(){
+        global $wpdb;
+        return $wpdb->prefix . self::TABLE_QUEUE;
+    }
+
     private function get_agents_table_name(){
         global $wpdb;
         return $wpdb->prefix . self::TABLE_AGENTS;
@@ -208,6 +215,40 @@ class SSL_Expiry_Manager_AIO {
             KEY cert_type (cert_type(100))
         ) {$charset};";
         dbDelta($sql);
+    }
+
+    public function ensure_task_queue_table(){
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        $charset = $wpdb->get_charset_collate();
+        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $sql = "CREATE TABLE {$table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            post_id BIGINT UNSIGNED NOT NULL,
+            site_url TEXT NOT NULL,
+            client_name VARCHAR(255) NOT NULL DEFAULT '',
+            context VARCHAR(50) NOT NULL DEFAULT 'manual',
+            enqueued_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            request_id VARCHAR(100) NOT NULL DEFAULT '',
+            status VARCHAR(20) NOT NULL DEFAULT 'queued',
+            claimed_at BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            attempts INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (id),
+            UNIQUE KEY post_id (post_id),
+            KEY status_claimed (status, claimed_at),
+            KEY request_id (request_id),
+            KEY enqueued_at (enqueued_at)
+        ) {$charset};";
+        dbDelta($sql);
+
+        if($this->queue_table_exists()){
+            $count = (int)$wpdb->get_var("SELECT COUNT(*) FROM {$table}");
+            if($count === 0){
+                $existing = get_option(self::OPTION_QUEUE, []);
+                [$normalized, ] = $this->normalize_queue_items($existing);
+                $this->replace_queue_rows($normalized);
+            }
+        }
     }
 
     public function ensure_agent_table(){
@@ -1778,6 +1819,34 @@ JS;
         }
         update_option(self::OPTION_LOG, $log, false);
     }
+    private function queue_table_exists(){
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        return $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table)) === $table;
+    }
+
+    private function replace_queue_rows($queue){
+        if(!$this->queue_table_exists()){
+            return;
+        }
+        global $wpdb;
+        $table = $this->get_queue_table_name();
+        $wpdb->query("DELETE FROM {$table}");
+        foreach((array)$queue as $item){
+            $wpdb->insert($table, [
+                'post_id'     => isset($item['id']) ? (int)$item['id'] : 0,
+                'site_url'    => isset($item['site_url']) ? esc_url_raw($item['site_url']) : '',
+                'client_name' => isset($item['client_name']) ? wp_strip_all_tags((string)$item['client_name']) : '',
+                'context'     => isset($item['context']) ? sanitize_key($item['context']) : 'manual',
+                'enqueued_at' => isset($item['enqueued_at']) ? (int)$item['enqueued_at'] : time(),
+                'request_id'  => isset($item['request_id']) ? sanitize_text_field($item['request_id']) : '',
+                'status'      => isset($item['status']) ? sanitize_text_field($item['status']) : 'queued',
+                'claimed_at'  => isset($item['claimed_at']) ? (int)$item['claimed_at'] : 0,
+                'attempts'    => isset($item['attempts']) ? (int)$item['attempts'] : 0,
+            ], ['%d','%s','%s','%s','%d','%s','%s','%d','%d']);
+        }
+    }
+
     private function normalize_queue_items($items){
         $normalized = [];
         $changed = false;
@@ -1816,6 +1885,18 @@ JS;
         return [$normalized, $changed];
     }
     private function get_task_queue(){
+        if($this->queue_table_exists()){
+            global $wpdb;
+            $table = $this->get_queue_table_name();
+            $rows = $wpdb->get_results("SELECT post_id AS id, site_url, client_name, context, enqueued_at, request_id, status, claimed_at, attempts FROM {$table} ORDER BY enqueued_at ASC", ARRAY_A);
+            [$normalized, $changed] = $this->normalize_queue_items($rows);
+            if($changed){
+                $this->replace_queue_rows($normalized);
+                update_option(self::OPTION_QUEUE, $normalized, false);
+            }
+            return $normalized;
+        }
+
         $queue = get_option(self::OPTION_QUEUE, []);
         if(!is_array($queue)){
             $queue = [];
@@ -1828,6 +1909,9 @@ JS;
     }
     private function save_task_queue($queue){
         [$normalized, ] = $this->normalize_queue_items($queue);
+        if($this->queue_table_exists()){
+            $this->replace_queue_rows($normalized);
+        }
         update_option(self::OPTION_QUEUE, $normalized, false);
     }
     private function release_stale_claims(&$queue){
@@ -3443,7 +3527,7 @@ JS;
                 ."<input type='hidden' name='action' value='{$add_action}'>"
                 ."<div class='ssl-token-create__fields'>"
                 ."  <label><span>שם הטוקן</span><input type='text' name='token_name' placeholder='לדוגמה: סוכן ראשי' required></label>"
-                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>וסף טוקן</button>"
+                ."  <button class='ssl-btn ssl-btn-primary' type='submit'>הוסף טוקן</button>"
                 ."</div>"
                 ."<p class='ssl-note'>הוסיפו טוקנים לפי הצורך והשתמשו בערך שלהם בבקשות מרוחקות.</p>"
               ."</form>";
@@ -5148,6 +5232,8 @@ JS;
             wp_insert_post(['post_title'=>'סל מחזור SSL','post_name'=>'ssl-trash','post_type'=>'page','post_status'=>'publish','post_content'=>'[ssl_trash]']);
         }
         $this->ensure_sql_table();
+        $this->ensure_task_queue_table();
+        $this->ensure_agent_table();
         $this->maybe_seed_sql_table();
     }
     public function route_export_helper(){
