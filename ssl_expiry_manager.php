@@ -4755,7 +4755,7 @@ JS;
         ];
     }
 
-    private function apply_certificate_details($post_id, $details, $source_label = 'agent'){
+    private function apply_certificate_details($post_id, $details, $source_label = 'agent', $checked_at = null){
         if(!$post_id || !is_array($details)){
             return false;
         }
@@ -4765,28 +4765,71 @@ JS;
             'common_name' => '',
             'issuer_name' => '',
         ];
-        if(!empty($details['expiry_ts'])){
-            $expiry_ts = (int)$details['expiry_ts'];
-            update_post_meta($post_id,'expiry_ts',$expiry_ts);
-            $result['expiry_ts'] = $expiry_ts;
+
+        $expiry_candidates = [
+            $details['expiry_ts'] ?? null,
+            $details['expiryts'] ?? null,
+            $details['expiry'] ?? null,
+            $details['not_after'] ?? null,
+        ];
+        foreach($expiry_candidates as $candidate){
+            if($candidate === null || $candidate === ''){
+                continue;
+            }
+            $parsed = is_numeric($candidate) ? (int)$candidate : strtotime((string)$candidate);
+            if($parsed && $parsed > 0){
+                update_post_meta($post_id,'expiry_ts',$parsed);
+                $result['expiry_ts'] = $parsed;
+            } else {
+                delete_post_meta($post_id,'expiry_ts');
+                $result['expiry_ts'] = null;
+            }
             $updated = true;
+            break;
         }
-        if(!empty($details['common_name'])){
-            $common_name = sanitize_text_field($details['common_name']);
-            update_post_meta($post_id,'cert_cn',$common_name);
-            $result['common_name'] = $common_name;
-            $updated = true;
+
+        $name_candidates = [
+            $details['common_name'] ?? null,
+            $details['cn'] ?? null,
+            $details['cert_cn'] ?? null,
+        ];
+        foreach($name_candidates as $candidate){
+            if($candidate === null){
+                continue;
+            }
+            $common_name = sanitize_text_field($candidate);
+            if($common_name !== ''){
+                update_post_meta($post_id,'cert_cn',$common_name);
+                $result['common_name'] = $common_name;
+                $updated = true;
+                break;
+            }
         }
-        if(!empty($details['issuer_name'])){
-            $issuer_name = sanitize_text_field($details['issuer_name']);
-            update_post_meta($post_id,'cert_ca',$issuer_name);
-            $result['issuer_name'] = $issuer_name;
-            $updated = true;
+
+        $issuer_candidates = [
+            $details['issuer_name'] ?? null,
+            $details['issuer'] ?? null,
+            $details['ca'] ?? null,
+            $details['cert_ca'] ?? null,
+        ];
+        foreach($issuer_candidates as $candidate){
+            if($candidate === null){
+                continue;
+            }
+            $issuer_name = sanitize_text_field($candidate);
+            if($issuer_name !== ''){
+                update_post_meta($post_id,'cert_ca',$issuer_name);
+                $result['issuer_name'] = $issuer_name;
+                $updated = true;
+                break;
+            }
         }
+
         if($updated){
+            $checked_value = $checked_at && is_numeric($checked_at) ? (int)$checked_at : time();
             update_post_meta($post_id,'source',$this->normalize_source_value($source_label, 'auto'));
             delete_post_meta($post_id,'last_error');
-            update_post_meta($post_id,'expiry_ts_checked_at', time());
+            update_post_meta($post_id,'expiry_ts_checked_at', $checked_value);
             $this->sync_table_record($post_id, get_post_status($post_id));
         }
         return $updated ? $result : false;
@@ -5042,7 +5085,16 @@ JS;
             $id=intval($row['id']??0); if(!$id) continue;
             $request_id = isset($row['request_id']) ? sanitize_text_field($row['request_id']) : '';
             $error_message = '';
-            $expiry_ts = !empty($row['expiry_ts']) ? intval($row['expiry_ts']) : 0;
+            $expiry_ts = 0;
+            if(isset($row['expiry_ts']) && $row['expiry_ts'] !== ''){
+                $expiry_ts = is_numeric($row['expiry_ts']) ? intval($row['expiry_ts']) : intval(strtotime((string)$row['expiry_ts']));
+            } elseif(isset($row['expiryts']) && $row['expiryts'] !== ''){
+                $expiry_ts = is_numeric($row['expiryts']) ? intval($row['expiryts']) : intval(strtotime((string)$row['expiryts']));
+            } elseif(isset($row['expiry']) && $row['expiry'] !== ''){
+                $expiry_ts = is_numeric($row['expiry']) ? intval($row['expiry']) : intval(strtotime((string)$row['expiry']));
+            } elseif(isset($row['not_after']) && $row['not_after'] !== ''){
+                $expiry_ts = is_numeric($row['not_after']) ? intval($row['not_after']) : intval(strtotime((string)$row['not_after']));
+            }
             $reported_source = $this->normalize_source_value($row['source'] ?? 'agent', 'agent');
             $reported_cn = '';
             if(!empty($row['common_name'])){
@@ -5068,9 +5120,13 @@ JS;
             if($reported_issuer !== ''){
                 $details_payload['issuer_name'] = $reported_issuer;
             }
+            $executed_at_ts = 0;
+            if(!empty($row['executed_at'])){
+                $executed_at_ts = strtotime(sanitize_text_field($row['executed_at']));
+            }
             $applied_details = [];
             if(!empty($details_payload)){
-                $applied_candidate = $this->apply_certificate_details($id, $details_payload, $reported_source ?: 'agent');
+                $applied_candidate = $this->apply_certificate_details($id, $details_payload, $reported_source ?: 'agent', $executed_at_ts ?: null);
                 if($applied_candidate){
                     $applied_details = $applied_candidate;
                 }
