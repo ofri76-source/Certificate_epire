@@ -3211,11 +3211,14 @@ JS;
                         $images_markup = "<div class='ssl-row-details__images'></div>";
                     }
                     $error_markup = $err !== '' ? "<span class='ssl-row-details__error'>".esc_html($err)."</span>" : '';
-                    $refresh_form = "<form class='ssl-inline-refresh' method='post' action='".esc_url(admin_url('admin-post.php'))."'>".$this->nonce_field()
-                        ."<input type='hidden' name='action' value='".esc_attr(self::SINGLE_CHECK_ACTION)."' />"
-                        ."<input type='hidden' name='post_id' value='".esc_attr($id)."' />"
-                        ."<button class='ssl-btn ssl-btn-outline ssl-btn--compact' type='submit'>עדכון רשומה</button>"
-                        ."</form>";
+                    $nonce_action = self::SINGLE_CHECK_ACTION . '_' . $id;
+                    $nonce = wp_create_nonce($nonce_action);
+                    $refresh_url = add_query_arg([
+                        'action'   => self::SINGLE_CHECK_ACTION,
+                        'post_id'  => $id,
+                        '_wpnonce' => $nonce,
+                    ], admin_url('admin-post.php'));
+                    $refresh_form = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact' href='".esc_url($refresh_url)."'>עדכון רשומה</a>";
                     $guide_button = '';
                     if($guide_url !== ''){
                         $guide_button = "<a class='ssl-btn ssl-btn-outline ssl-btn--compact ssl-guide-link' target='_blank' rel='noopener' href='".esc_url($guide_url)."'>מדריך</a>";
@@ -4008,8 +4011,8 @@ JS;
     }
 
     public function handle_single_check() {
-        $this->check_nonce();
-        $post_id = isset($_POST['post_id']) ? (int)$_POST['post_id'] : 0;
+        $post_id = isset($_GET['post_id']) ? (int)$_GET['post_id'] : 0;
+        check_admin_referer(self::SINGLE_CHECK_ACTION . '_' . $post_id);
         $redirect = '';
         if(isset($_POST['redirect_to'])){
             $candidate = esc_url_raw(wp_unslash($_POST['redirect_to']));
